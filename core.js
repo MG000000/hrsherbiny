@@ -1,0 +1,144 @@
+// الجلسة والصلاحيات والبيانات المشتركة والإشعارات والتنقل
+(function () {
+  const { esc, icon } = UI;
+
+  // ========== الجلسة والصلاحيات (من أدوار ERPNext نفسها) ==========
+  const Session = {
+    user: null, full_name: "", roles: [], employee: null,
+    load() { try { Object.assign(this, JSON.parse(localStorage.getItem("hr_session")) || {}); } catch (e) {} return !!this.user; },
+    save() { const { user, full_name, roles, employee } = this; try { localStorage.setItem("hr_session", JSON.stringify({ user, full_name, roles, employee })); } catch (e) {} },
+    clear() { this.user = null; this.employee = null; this.roles = []; API.logout(); try { localStorage.removeItem("hr_session"); } catch (e) {} },
+    has(r) { return this.roles.includes(r); },
+    get isAdmin() { return this.has("System Manager") || this.has("HR Manager"); },
+    get isHR() { return this.isAdmin || this.has("HR User"); },
+    get isLeaveApprover() { return this.isHR || this.has("Leave Approver"); },
+    get isShiftApprover() { return this.isHR || this.has("Shift Approver"); },
+    get canApprove() { return this.isHR || this.has("Leave Approver") || this.has("Shift Approver"); },
+    get canReward() { return this.isHR; },
+  };
+  window.Session = Session;
+
+  // ========== بيانات مشتركة ==========
+  const cache = {};
+  const once = async (k, fn) => (k in cache ? cache[k] : (cache[k] = await fn()));
+  const Data = {
+    clear(k) { if (k) delete cache[k]; else Object.keys(cache).forEach((x) => delete cache[x]); },
+    shiftTypes: () => once("shiftTypes", async () => Object.fromEntries((await API.list("Shift Type", { fields: ["*"], order_by: "name asc" })).map((s) => [s.name, s]))),
+    locations: () => once("locations", () => API.list("Shift Location", { fields: ["*"], order_by: "name asc" }).catch(() => [])),
+    leaveTypes: () => once("leaveTypes", () => API.list("Leave Type", { fields: ["name", "is_lwp"], order_by: "name asc" }).catch(() => [])),
+    overtimeTypes: () => once("otTypes", async () => Object.fromEntries((await API.list("Overtime Type", { fields: ["*"] }).catch(() => [])).map((o) => [o.name, o]))),
+    components: () => once("components", async () => Object.fromEntries((await API.list("Salary Component", { fields: ["name", "type", "amount"] }).catch(() => [])).map((c) => [c.name, c]))),
+    employees: () => once("employees", () => API.list("Employee", { fields: ["*"], filters: [["status", "=", "Active"]], order_by: "employee_name asc" })),
+    async employee(name) { return (await this.employees()).find((e) => e.name === name); },
+    // الموظفين اللي المستخدم مسؤول عنهم
+    async team() {
+      const all = await this.employees().catch(() => []);
+      if (Session.isHR) return all;
+      const me = Session.employee && Session.employee.name;
+      return all.filter((e) => e.name !== me && (e.reports_to === me || e.leave_approver === Session.user || e.shift_request_approver === Session.user));
+    },
+    // تعيينات الشيفت الفعّالة في فترة
+    async assignments(from, to, employee) {
+      const f = [["docstatus", "=", 1], ["status", "=", "Active"], ["start_date", "<=", to]];
+      if (employee) f.push(["employee", "=", employee]);
+      const rows = await API.list("Shift Assignment", { fields: ["name", "employee", "employee_name", "shift_type", "shift_location", "start_date", "end_date"], filters: f, order_by: "start_date desc" }).catch(() => []);
+      return rows.filter((a) => !a.end_date || a.end_date >= from);
+    },
+    // الشيفتات المعيّنة لموظف في يوم معيّن: [{shift, location}]
+    shiftsOn(emp, date, assignments, types) {
+      const mine = assignments.filter((a) => a.employee === emp.name && a.start_date <= date && (!a.end_date || a.end_date >= date));
+      if (mine.length) return mine.map((a) => ({ shift: types[a.shift_type], location: a.shift_location, assignment: a.name })).filter((x) => x.shift);
+      return emp.default_shift && types[emp.default_shift] ? [{ shift: types[emp.default_shift], location: null }] : [];
+    },
+    async hrUsers() {
+      return once("hrUsers", async () => (await API.admin.list("User", { fields: ["name"], filters: [["enabled", "=", 1], ["Has Role", "role", "in", ["HR User", "HR Manager"]]] }).catch(() => [])).map((u) => u.name));
+    },
+    async managerUser(emp) {
+      if (!emp.reports_to) return null;
+      const m = await this.employee(emp.reports_to);
+      return m && m.user_id;
+    },
+    async baseSalary(employee, onDate) {
+      const r = await API.list("Salary Structure Assignment", { fields: ["base", "from_date"], filters: [["employee", "=", employee], ["docstatus", "=", 1], ["from_date", "<=", onDate]], order_by: "from_date desc", limit: 1 }).catch(() => []);
+      return r[0] ? Number(r[0].base) || 0 : 0;
+    },
+  };
+  window.Data = Data;
+
+  // ========== الإشعارات (Notification Log الأصلي، وبتظهر كمان في جرس ERPNext) ==========
+  const Notify = {
+    async send(users, subject, doctype, docname) {
+      const list = [...new Set([].concat(users || []).filter((u) => u && u !== Session.user))];
+      await Promise.all(list.map((u) => API.admin.insert("Notification Log", { for_user: u, from_user: Session.user, subject, type: "Alert", document_type: doctype || null, document_name: docname || null }).catch((e) => console.warn(e))));
+    },
+    async unread() {
+      try { return (await API.list("Notification Log", { fields: ["name"], filters: [["for_user", "=", Session.user], ["read", "=", 0]], limit: 99 })).length; } catch (e) { return 0; }
+    },
+    async badge() {
+      const n = await this.unread();
+      document.querySelectorAll("[data-bell] .dot").forEach((d) => { d.textContent = n > 9 ? "9+" : n; d.hidden = !n; });
+    },
+    route(dt) {
+      return { "Attendance Request": "#/inbox", "Shift Request": "#/inbox", "Leave Application": Session.canApprove ? "#/inbox" : "#/mine", ToDo: "#/tasks", "Additional Salary": "#/rewards" }[dt] || "#/home";
+    },
+    async open() {
+      const s = UI.sheet({ title: "الإشعارات", body: loadingHTML, footer: `<button class="btn ghost" data-all>تعليم الكل كمقروء</button>` });
+      const rows = await API.list("Notification Log", { fields: ["name", "subject", "creation", "read", "document_type"], filters: [["for_user", "=", Session.user]], order_by: "creation desc", limit: 40 }).catch(() => []);
+      s.body.innerHTML = rows.length ? `<div class="group">${rows.map((r) => `<button class="row-item notif ${Number(r.read) ? "" : "unread"}" data-n="${esc(r.name)}" data-dt="${esc(r.document_type || "")}"><span class="ndot"></span><span class="ri-main"><span class="ri-t">${esc(String(r.subject || "").replace(/<[^>]+>/g, ""))}</span><span class="ri-s">${UI.ago(r.creation)}</span></span></button>`).join("")}</div>` : `<div class="empty">مفيش إشعارات</div>`;
+      s.body.querySelectorAll(".notif").forEach((b) => b.onclick = () => { API.update("Notification Log", b.dataset.n, { read: 1 }).catch(() => {}); s.close(); location.hash = this.route(b.dataset.dt); setTimeout(() => this.badge(), 500); });
+      s.el.querySelector("[data-all]").onclick = async () => {
+        await Promise.all(rows.filter((r) => !Number(r.read)).map((r) => API.update("Notification Log", r.name, { read: 1 }).catch(() => {})));
+        s.body.querySelectorAll(".unread").forEach((x) => x.classList.remove("unread")); this.badge();
+      };
+    },
+  };
+  window.Notify = Notify;
+
+  // ========== الهيكل: شريط علوي + شريط تنقل تحت ==========
+  const TABS = () => [
+    ["home", "home", "الرئيسية"],
+    Session.canApprove ? ["inbox", "inbox", "الطلبات"] : ["mine", "cal", "طلباتي"],
+    ["punch", "finger", "البصمة"],
+    ["tasks", "tasks", "المهام"],
+    ["more", "more", "المزيد"],
+  ];
+
+  function shell() {
+    document.getElementById("app").innerHTML = `
+      <header class="appbar">
+        <a class="brand" href="#/home"><span class="mark">${icon("finger")}</span>${esc(CONFIG.APP_NAME)}</a>
+        ${API.isDemo() ? '<span class="pill warn">تجريبي</span>' : ""}
+        <span class="sp"></span>
+        <button class="ibtn" data-bell aria-label="الإشعارات">${icon("bell")}<span class="dot" hidden>0</span></button>
+      </header>
+      <main id="view" class="view"></main>
+      <nav class="tabbar" aria-label="التنقل">${TABS().map(([k, ic, t]) => `<a href="#/${k}" data-tab="${k}" class="${k === "punch" ? "fab" : ""}"><span class="ti">${icon(ic)}</span><span class="tl">${t}</span></a>`).join("")}</nav>`;
+    document.querySelector("[data-bell]").onclick = () => Notify.open();
+    Notify.badge();
+  }
+
+  window.loadingHTML = '<div class="loading"><span class="spin"></span></div>';
+  window.pageHead = (title, sub = "", action = "") => `<div class="phead">${["", "home", "inbox", "mine", "punch", "tasks", "more"].includes(location.hash.replace(/^#\/?/, "")) ? "" : `<button class="ibtn back" onclick="history.length>1?history.back():(location.hash='#/home')" aria-label="رجوع">${icon("arrow")}</button>`}<div class="pt"><h1>${esc(title)}</h1>${sub ? `<p>${sub}</p>` : ""}</div>${action}</div>`;
+  window.deny = (view, title) => { view.innerHTML = `${pageHead(title)}<div class="empty">الصفحة دي محتاجة صلاحية مش عندك على ERPNext.</div>`; };
+
+  let timer;
+  async function route() {
+    const view = document.getElementById("view"); if (!view) return;
+    if (window.Face) Face.stop();
+    const name = location.hash.replace(/^#\/?/, "").split("?")[0] || "home";
+    document.querySelectorAll(".tabbar a").forEach((a) => a.classList.toggle("on", a.dataset.tab === name || (name === "mine" && a.dataset.tab === "inbox")));
+    view.innerHTML = loadingHTML; window.scrollTo(0, 0);
+    try { await (Views[name] || Views.home)(view); }
+    catch (e) { console.error(e); view.innerHTML = `${pageHead("حصلت مشكلة")}<div class="note bad">${esc(e.message || e)}</div><button class="btn primary block" onclick="App.route()">جرّب تاني</button>`; }
+  }
+
+  function start() {
+    if (!Session.load()) { Views.login(document.getElementById("app")); return; }
+    shell(); route();
+    clearInterval(timer); timer = setInterval(() => Notify.badge(), (CONFIG.NOTIFY_POLL_SECONDS || 60) * 1000);
+  }
+  window.App = { start, route };
+  window.addEventListener("hashchange", () => Session.user && route());
+  window.addEventListener("hr-auth-expired", () => { if (!Session.user) return; Session.clear(); Data.clear(); UI.toast("الجلسة انتهت، ادخل تاني", "bad"); start(); });
+  document.addEventListener("DOMContentLoaded", start);
+})();

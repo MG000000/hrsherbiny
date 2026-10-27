@@ -27,6 +27,13 @@
     print: '<path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>',
     download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/>',
     trash: '<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/>',
+    more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
+    chev: '<path d="m15 18-6-6 6-6"/>',
+    swap: '<path d="M17 3l4 4-4 4"/><path d="M3 7h18"/><path d="M7 21l-4-4 4-4"/><path d="M21 17H3"/>',
+    building: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M16 6h.01M12 6h.01M12 10h.01M12 14h.01M16 10h.01M16 14h.01M8 10h.01M8 14h.01"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+    coins: '<circle cx="8" cy="8" r="6"/><path d="M18.1 10.4A6 6 0 1 1 10.3 18"/><path d="M7 6h1v4"/>',
   };
   const icon = (n) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n] || ""}</svg>`;
 
@@ -95,11 +102,12 @@
   };
   const initials = (n) => String(n || "?").trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join("");
 
-  const REQ_TYPE = { "Late Check-in": "حضور متأخر", "Early Check-out": "انصراف مبكر", "Other Shift": "بصمة في شيفت تاني" };
+  const REQ_TYPE = { late: "حضور متأخر", early: "انصراف مبكر", shift: "بصمة في شيفت تاني" };
   const STATUS = {
-    Pending: ["في الانتظار", "warn"], Open: ["في الانتظار", "warn"], Approved: ["مقبول", "ok"], Rejected: ["مرفوض", "bad"], Cancelled: ["ملغي", "mute"],
+    Pending: ["في الانتظار", "warn"], Open: ["في الانتظار", "warn"], Draft: ["في الانتظار", "warn"], Approved: ["مقبول", "ok"], Rejected: ["مرفوض", "bad"], Cancelled: ["ملغي", "mute"],
   };
   const statusTag = (s) => { const [t, k] = STATUS[s] || [s, "mute"]; return `<span class="tag ${k}">${esc(t)}</span>`; };
 
-  window.UI = { esc, icon, toast, modal, confirmBox, viewImage, nowDT, today, hm, money, num, mins, dateAr, ago, initials, REQ_TYPE, statusTag };
+  const sheet = (o) => modal(o);
+  window.UI = { sheet, esc, icon, toast, modal, confirmBox, viewImage, nowDT, today, hm, money, num, mins, dateAr, ago, initials, REQ_TYPE, statusTag };
 })();
