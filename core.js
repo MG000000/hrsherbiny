@@ -106,7 +106,7 @@
   function shell() {
     document.getElementById("app").innerHTML = `
       <header class="appbar">
-        <a class="brand" href="#/home"><span class="mark">${icon("finger")}</span>${esc(CONFIG.APP_NAME)}</a>
+        <a class="brand" href="#/home"><img class="mark" src="logo.png" alt="">${esc(CONFIG.APP_NAME)}</a>
         ${API.isDemo() ? '<span class="pill warn">تجريبي</span>' : ""}
         <span class="sp"></span>
         <button class="ibtn" data-bell aria-label="الإشعارات">${icon("bell")}<span class="dot" hidden>0</span></button>

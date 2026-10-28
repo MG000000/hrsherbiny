@@ -14,7 +14,7 @@ window.Views = window.Views || {};
   Views.login = function (root) {
     const demo = API.isDemo();
     root.innerHTML = `<div class="login">
-      <div class="logo">${icon("finger")}</div>
+      <img class="logo" src="logo-wide.png" alt="${esc(CONFIG.APP_NAME)}">
       <h1>${esc(CONFIG.APP_NAME)}</h1>
       <p class="lead">ادخل بحسابك على ERPNext</p>
       <form id="lf" class="form">

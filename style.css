@@ -1,20 +1,23 @@
 /* حضوري — تصميم تطبيق موبايل
    الهوية: ساعة البصمة. حلقة الشيفت في الرئيسية هي العنصر المميز، وكل الباقي قوائم هادية. */
 :root {
-  --bg: #eef1f6;
+  /* ألوان الشركة: أحمر النقطة، أسود الحروف، ورمادي */
+  --bg: #f1f1f2;
   --paper: #ffffff;
-  --ink: #10233f;
-  --ink-2: #44546e;
-  --mute: #8390a6;
-  --line: #dde3ed;
-  --cobalt: #2647d9;
-  --cobalt-2: #1b36b0;
-  --cobalt-soft: #e7ecfd;
+  --ink: #141414;
+  --ink-2: #47474a;
+  --mute: #8b8b8f;
+  --line: #e2e2e4;
+  --cobalt: #e3080f;      /* الأحمر الأساسي */
+  --cobalt-2: #b8070c;
+  --cobalt-soft: #fde8e9;
+  --gray: #5f6064;
+  --gray-soft: #ebebec;
   --in: #0e8a5e;
   --in-soft: #e1f3eb;
   --late: #a96d00;
   --late-soft: #fbf0d5;
-  --out: #c53737;
+  --out: #c42b2b;
   --out-soft: #fbe6e6;
   --font: "IBM Plex Sans Arabic", system-ui, sans-serif;
   --r-lg: 26px;
@@ -24,15 +27,15 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0d1626; --paper: #152139; --ink: #e9eef7; --ink-2: #b4c0d4; --mute: #7f8ca3; --line: #24324d;
-    --cobalt: #7d97ff; --cobalt-2: #a3b5ff; --cobalt-soft: #1c2b52; --in: #4fd39d; --in-soft: #12352a;
-    --late: #f1bd52; --late-soft: #3a2e10; --out: #f38b8b; --out-soft: #3d1a1d;
+    --bg: #111112; --paper: #1c1c1e; --ink: #f2f2f3; --ink-2: #c3c3c7; --mute: #8d8d92; --line: #2e2e32;
+    --cobalt: #ff3a40; --cobalt-2: #ff6b70; --cobalt-soft: #3b1416; --gray: #a5a5aa; --gray-soft: #2a2a2d;
+    --in: #4fd39d; --in-soft: #12352a; --late: #f1bd52; --late-soft: #3a2e10; --out: #f38b8b; --out-soft: #3d1a1d;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #0d1626; --paper: #152139; --ink: #e9eef7; --ink-2: #b4c0d4; --mute: #7f8ca3; --line: #24324d;
-  --cobalt: #7d97ff; --cobalt-2: #a3b5ff; --cobalt-soft: #1c2b52; --in: #4fd39d; --in-soft: #12352a;
-  --late: #f1bd52; --late-soft: #3a2e10; --out: #f38b8b; --out-soft: #3d1a1d;
+  --bg: #111112; --paper: #1c1c1e; --ink: #f2f2f3; --ink-2: #c3c3c7; --mute: #8d8d92; --line: #2e2e32;
+  --cobalt: #ff3a40; --cobalt-2: #ff6b70; --cobalt-soft: #3b1416; --gray: #a5a5aa; --gray-soft: #2a2a2d;
+  --in: #4fd39d; --in-soft: #12352a; --late: #f1bd52; --late-soft: #3a2e10; --out: #f38b8b; --out-soft: #3d1a1d;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -47,7 +50,7 @@ button { cursor: pointer; }
 /* ===== الشريط العلوي ===== */
 .appbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 10px; padding: 10px 16px; max-width: 640px; margin: 0 auto; background: var(--bg); }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 18px; color: var(--ink); text-decoration: none; }
-.mark { width: 32px; height: 32px; border-radius: 10px; background: var(--cobalt); color: #fff; display: grid; place-items: center; }
+.mark { width: 36px; height: 36px; border-radius: 10px; background: #fff; object-fit: contain; padding: 2px; box-shadow: inset 0 0 0 1px var(--line); }
 .mark svg { width: 19px; height: 19px; }
 .sp { flex: 1; }
 .ibtn { position: relative; width: 42px; height: 42px; border-radius: 14px; border: 0; background: var(--paper); color: var(--ink); display: grid; place-items: center; text-decoration: none; flex: none; }
@@ -81,7 +84,7 @@ button { cursor: pointer; }
 .dial .greet { font-size: 15px; color: var(--ink-2); margin: 0 0 4px; }
 .ring { position: relative; width: min(74vw, 270px); aspect-ratio: 1; margin: 6px auto 8px; }
 .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-.ring .track { fill: none; stroke: var(--line); stroke-width: 14; }
+.ring .track { fill: none; stroke: var(--gray-soft); stroke-width: 14; }
 .ring .done { fill: none; stroke: var(--cobalt); stroke-width: 14; stroke-linecap: round; transition: stroke-dashoffset .8s ease; }
 .ring .tick { fill: var(--ink); }
 .ring .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
@@ -102,7 +105,7 @@ button { cursor: pointer; }
 .row-item { width: 100%; display: flex; align-items: center; gap: 12px; padding: 13px 14px; background: none; border: 0; text-align: start; color: var(--ink); text-decoration: none; }
 .row-item + .row-item, .group > * + * { border-top: 1px solid var(--line); }
 a.row-item:active, button.row-item:active { background: var(--bg); }
-.ri-ic { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; flex: none; background: var(--cobalt-soft); color: var(--cobalt); }
+.ri-ic { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; flex: none; background: var(--gray-soft); color: var(--gray); }
 .ri-ic svg { width: 20px; height: 20px; }
 .ri-ic.in { background: var(--in-soft); color: var(--in); }
 .ri-ic.late { background: var(--late-soft); color: var(--late); }
@@ -113,7 +116,7 @@ a.row-item:active, button.row-item:active { background: var(--bg); }
 .ri-end { text-align: end; font-size: 13px; color: var(--ink-2); flex: none; font-variant-numeric: tabular-nums; }
 .ri-big { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .chev svg { width: 18px; height: 18px; color: var(--mute); }
-.avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--cobalt-soft); color: var(--cobalt); display: grid; place-items: center; font-weight: 700; font-size: 14px; flex: none; overflow: hidden; }
+.avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--gray-soft); color: var(--ink-2); display: grid; place-items: center; font-weight: 700; font-size: 14px; flex: none; overflow: hidden; }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
 
 .today-strip { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--paper); border-radius: var(--r); margin-top: 12px; text-decoration: none; color: var(--ink); }
@@ -121,14 +124,14 @@ a.row-item:active, button.row-item:active { background: var(--bg); }
 .today-strip div + div { border-inline-start: 1px solid var(--line); }
 .today-strip b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.2; }
 .today-strip span { font-size: 12px; color: var(--mute); }
-.today-strip .in b { color: var(--in); } .today-strip .out b { color: var(--out); } .today-strip .late b { color: var(--late); } .today-strip .pend b { color: var(--cobalt); }
+.today-strip .in b { color: var(--in); } .today-strip .out b { color: var(--out); } .today-strip .late b { color: var(--late); } .today-strip .pend b { color: var(--gray); }
 
 /* ===== تاجات ===== */
 .tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .tag.ok { background: var(--in-soft); color: var(--in); }
 .tag.bad { background: var(--out-soft); color: var(--out); }
 .tag.warn { background: var(--late-soft); color: var(--late); }
-.tag.info { background: var(--cobalt-soft); color: var(--cobalt); }
+.tag.info { background: var(--gray-soft); color: var(--gray); }
 .tag.mute { background: var(--bg); color: var(--mute); }
 
 /* ===== أزرار وفورم ===== */
@@ -161,7 +164,7 @@ textarea.input { min-height: 90px; resize: vertical; }
 .seg { display: flex; gap: 4px; padding: 4px; background: var(--paper); border-radius: 14px; margin-bottom: 14px; overflow-x: auto; }
 .seg button { flex: 1; border: 0; background: none; min-height: 40px; padding: 6px 12px; border-radius: 11px; font-weight: 600; color: var(--ink-2); white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .seg button .n { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--mute); }
-.seg button.on { background: var(--ink); color: var(--paper); }
+.seg button.on { background: var(--gray); color: #fff; }
 .seg button.on .n { color: inherit; opacity: .7; }
 .seg button.on[data-k="absent"] { background: var(--out); color: #fff; }
 .seg button.on[data-k="present"] { background: var(--in); color: #fff; }
@@ -199,7 +202,7 @@ td.n, th.n { text-align: end; font-variant-numeric: tabular-nums; }
 .kv dt { color: var(--mute); } .kv dd { margin: 0; font-weight: 600; text-align: end; font-variant-numeric: tabular-nums; }
 
 /* ===== عامة ===== */
-.note { font-size: 14px; padding: 12px 14px; border-radius: 14px; background: var(--cobalt-soft); color: var(--cobalt-2); margin: 12px 0; }
+.note { font-size: 14px; padding: 12px 14px; border-radius: 14px; background: var(--gray-soft); color: var(--ink-2); margin: 12px 0; }
 .note.warn { background: var(--late-soft); color: var(--late); }
 .note.bad { background: var(--out-soft); color: var(--out); }
 .empty { text-align: center; color: var(--mute); padding: 40px 20px; background: var(--paper); border-radius: var(--r); }
@@ -245,8 +248,7 @@ td.n, th.n { text-align: end; font-variant-numeric: tabular-nums; }
 
 /* ===== الدخول ===== */
 .login { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; padding: 24px 20px; max-width: 440px; margin: 0 auto; }
-.login .logo { width: 64px; height: 64px; border-radius: 20px; background: var(--cobalt); color: #fff; display: grid; place-items: center; margin-bottom: 18px; }
-.login .logo svg { width: 36px; height: 36px; }
+.login .logo { width: 150px; height: auto; border-radius: 20px; background: #fff; padding: 10px 14px; margin-bottom: 20px; }
 .login h1 { margin: 0; font-size: 30px; font-weight: 700; }
 .login .lead { margin: 4px 0 26px; color: var(--ink-2); }
 
@@ -256,3 +258,6 @@ td.n, th.n { text-align: end; font-variant-numeric: tabular-nums; }
 }
 
 .ri-tag { margin-top: 5px; } .ri-tag .tag { white-space: normal; }
+
+.appbar { border-bottom: 3px solid var(--cobalt); background: var(--paper); max-width: none; padding-inline: max(16px, calc((100% - 608px) / 2)); margin-bottom: 14px; }
+.ri-ic.brand-ic { background: var(--cobalt-soft); color: var(--cobalt); }
