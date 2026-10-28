@@ -321,7 +321,15 @@ window.Views = window.Views || {};
       // بصمة محتاجة موافقة: بتتسجل Employee Checkin حالتها Pending في الـ Workflow، ومش بتدخل الحضور التلقائي لحد ما المدير يوافق
       if (!(await Data.workflowReady())) throw new Error("البصمة دي محتاجة موافقة المدير، بس الـ Workflow بتاع البصمة لسه مش متجهز على ERPNext. كلّم مدير النظام يجهزه من المزيد ← تجهيز ERPNext.");
       const tag = need.type === "shift" ? `app:shift:${st.shift}` : `app:${need.type}:${need.minutes}`;
-      const doc = await API.insert("Employee Checkin", { ...ck, device_id: tag, workflow_state: "Pending", skip_auto_attendance: 1 });
+      // ERPNext مش بيسمح نعمل المستند على حالة غير أول حالة (Approved)، فبنسجّلها عادي ومش محسوبة في الحضور،
+      // وبعدين بننقلها لـ Pending عن طريق الـ Workflow نفسه (إجراء Review)
+      const doc = await API.insert("Employee Checkin", { ...ck, device_id: tag, skip_auto_attendance: 1 });
+      const review = (A) => A.call("frappe.model.workflow.apply_workflow", { doc: JSON.stringify({ doctype: "Employee Checkin", name: doc.name }), action: "Review" });
+      try { await review(API).catch((e) => ([401, 403, 417].includes(e.status) ? review(API.admin) : Promise.reject(e))); }
+      catch (e) {
+        await API.admin.remove("Employee Checkin", doc.name).catch(() => {});
+        throw new Error(`مش قادر أبعت البصمة لموافقة المدير (${e.message}). كلّم مدير النظام يدوس "جهّز كل حاجة" من المزيد ← تجهيز ERPNext، وجرّب تاني.`);
+      }
       const label = reasonOf(doc.device_id ? doc : { device_id: tag });
       const manager = await Data.managerUser(emp);
       await Notify.send(manager || (await Data.adminUsers()), `${emp.employee_name}: ${label}، ${what} الساعة ${UI.hm(now)}، ومحتاج موافقتك`, "Employee Checkin", doc.name);

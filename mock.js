@@ -162,7 +162,11 @@
       if (e) d.employee_name = e.employee_name;
       if (dt === "Leave Application") { d.total_leave_days = Math.round((new Date(d.to_date) - new Date(d.from_date)) / 864e5) + 1; d.status = d.status || "Open"; }
       if (dt === "Shift Request") d.status = d.status || "Draft";
-      if (dt === "Employee Checkin") d.workflow_state = d.workflow_state || "Approved";
+      if (dt === "Employee Checkin") {
+        // زي ERPNext: المستند الجديد لازم يبدأ من أول حالة في الـ Workflow
+        if (d.workflow_state && d.workflow_state !== "Approved") throw new ApiError(`Workflow State transition not allowed from Approved to ${d.workflow_state}`, 417);
+        d.workflow_state = "Approved";
+      }
       if (dt === "Shift Assignment") d.status = d.status || "Active";
       if (dt === "Additional Salary") { const c = rows("Salary Component").find((x) => x.name === d.salary_component); d.type = c ? c.type : d.type; }
       (db[dt] = db[dt] || []).push(d);
@@ -190,8 +194,9 @@
       if (method === "frappe.model.workflow.apply_workflow") {
         const ref = JSON.parse(args.doc);
         const d = rows(ref.doctype).find((x) => x.name === ref.name);
-        if (!d || d.workflow_state !== "Pending") throw new ApiError("Not a valid Workflow Action", 417);
-        return this.update(ref.doctype, ref.name, { workflow_state: args.action === "Approve" ? "Approved" : "Rejected" });
+        const ok = args.action === "Review" ? d && d.workflow_state === "Approved" : d && d.workflow_state === "Pending";
+        if (!ok) throw new ApiError("Not a valid Workflow Action", 417);
+        return this.update(ref.doctype, ref.name, { workflow_state: { Review: "Pending", Approve: "Approved", Reject: "Rejected" }[args.action] });
       }
       return null;
     },
