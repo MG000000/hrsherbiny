@@ -1,6 +1,6 @@
 // بيانات تجريبية بنفس مستندات ERPNext و HRMS الأصلية (للتجربة من غير سيرفر)
 (function () {
-  const KEY = "hr_mock_v3";
+  const KEY = "hr_mock_v4";
   const pad = (n) => String(n).padStart(2, "0");
   const D = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const DT = (d) => `${D(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
@@ -25,6 +25,7 @@
       "youssef@demo.com": ["يوسف علي", ["Employee"]],
       "nour@demo.com": ["نور الهدى", ["Employee"]],
       "omar@demo.com": ["عمر خالد", ["Employee"]],
+      "guest@demo.com": ["حساب مش مربوط", ["Employee"]],
     };
 
     add("Overtime Type", { name: "أوفر عادي", standard_multiplier: 1.5, overtime_salary_component: C().overtime });

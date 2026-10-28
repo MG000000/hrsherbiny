@@ -21,7 +21,7 @@ window.Views = window.Views || {};
   };
 
   // ================= الدخول =================
-  Views.login = function (root) {
+  Views.login = function (root, message) {
     const demo = API.isDemo();
     root.innerHTML = `<div class="login">
       <img class="logo" src="logo-wide.png" alt="${esc(CONFIG.APP_NAME)}">
@@ -34,7 +34,7 @@ window.Views = window.Views || {};
       </form>
       <label class="check" style="margin-top:10px"><input type="checkbox" id="demo" ${demo ? "checked" : ""}> تجربة ببيانات وهمية</label>
       ${demo ? `<div class="note">الباسورد <b>demo</b> لكل الحسابات:<br><span dir="ltr">admin@demo.com</span> مدير موارد بشرية، <span dir="ltr">mona@demo.com</span> HR User وبتوافق على الطلبات، <span dir="ltr">sara@demo.com</span> موظفة</div>` : ""}
-      <div id="err"></div></div>`;
+      <div id="err">${message ? `<div class="note bad">${esc(message)}</div>` : ""}</div></div>`;
     root.querySelector("#demo").onchange = (e) => { API.setDemo(e.target.checked); Data.clear(); Views.login(root); };
     root.querySelector("#lf").onsubmit = async (e) => {
       e.preventDefault();
@@ -43,9 +43,11 @@ window.Views = window.Views || {};
       const usr = raw.includes("@") ? raw.toLowerCase() : raw;
       try {
         const u = await API.login(usr, root.querySelector("#p").value);
-        const emp = (await API.list("Employee", { fields: ["*"], filters: [["user_id", "=", u.user]], limit: 1 }).catch(() => []))[0] || null;
-        Object.assign(Session, { user: u.user, full_name: emp ? emp.employee_name : u.full_name, roles: u.roles, employee: emp });
-        Session.save(); Data.clear(); location.hash = "#/home"; App.start();
+        Object.assign(Session, { user: u.user, full_name: u.full_name, roles: u.roles, employee: null });
+        // لازم الحساب يكون مربوط بموظف (إلا مدير النظام)
+        const problem = await App.verify();
+        if (problem) { Session.clear(); throw new Error(problem); }
+        Data.clear(); location.hash = "#/home"; App.start();
       } catch (x) {
         root.querySelector("#err").innerHTML = `<div class="note bad">${esc(x.message)}</div>`;
         b.disabled = false; b.textContent = "دخول";

@@ -148,12 +148,44 @@
     catch (e) { console.error(e); view.innerHTML = `${pageHead("حصلت مشكلة")}<div class="note bad">${esc(e.message || e)}</div><button class="btn primary block" onclick="App.route()">جرّب تاني</button>`; }
   }
 
-  function start() {
-    if (!Session.load()) { Views.login(document.getElementById("app")); return; }
+  // بنتأكد في كل دخول وكل فتحة للصفحة إن الحساب مربوط بموظف Active، وبنجيب أدواره من جديد من ERPNext.
+  // بيرجع رسالة لو فيه مشكلة، أو null لو تمام.
+  async function verify() {
+    let user, emps;
+    try {
+      [user, emps] = await Promise.all([
+        API.admin.get("User", Session.user),
+        API.admin.list("Employee", { fields: ["*"], filters: [["user_id", "=", Session.user]], limit: 2 }),
+      ]);
+    } catch (e) {
+      if (e.status === 404) return "الحساب ده مش موجود على ERPNext.";
+      if (e.status === 0 && Session.employee) return null; // من غير نت: نكمّل بآخر بيانات متسجلة
+      throw e;
+    }
+    if (user.enabled === 0) return "الحساب ده متوقف على ERPNext.";
+    const roles = (user.roles || []).map((r) => r.role);
+    const emp = emps[0] || null;
+    const isSM = roles.includes("System Manager");
+    if (!emp && !isSM) return "حسابك مش مربوط بموظف على ERPNext، فمش هتقدر تدخل. اطلب من الموارد البشرية يحطوا إيميلك في خانة User ID في ملفك.";
+    if (emp && emp.status !== "Active" && !isSM) return "ملفك كموظف مش Active على ERPNext، فمش هتقدر تدخل.";
+    if (emps.length > 1) console.warn("أكتر من موظف مربوطين بنفس الحساب", emps.map((e) => e.name));
+    Object.assign(Session, { roles, employee: emp, full_name: emp ? emp.employee_name : user.full_name || Session.user });
+    Session.save();
+    return null;
+  }
+
+  async function start() {
+    const root = document.getElementById("app");
+    if (!Session.load()) { Views.login(root); return; }
+    root.innerHTML = loadingHTML;
+    let problem = null;
+    try { problem = await verify(); }
+    catch (e) { problem = e.message; }
+    if (problem) { Session.clear(); Data.clear(); Views.login(root, problem); return; }
     shell(); route();
     clearInterval(timer); timer = setInterval(() => Notify.badge(), (CONFIG.NOTIFY_POLL_SECONDS || 60) * 1000);
   }
-  window.App = { start, route };
+  window.App = { start, route, verify };
   window.addEventListener("hashchange", () => Session.user && route());
   window.addEventListener("hr-auth-expired", () => { if (!Session.user) return; Session.clear(); Data.clear(); UI.toast("الجلسة انتهت، ادخل تاني", "bad"); start(); });
   document.addEventListener("DOMContentLoaded", start);
