@@ -25,7 +25,11 @@
   const cache = {};
   const once = async (k, fn) => (k in cache ? cache[k] : (cache[k] = await fn()));
   const Data = {
-    clear(k) { if (k) delete cache[k]; else Object.keys(cache).forEach((x) => delete cache[x]); },
+    clear(k) {
+      if (!k) Object.keys(cache).forEach((x) => delete cache[x]);
+      else if (k.endsWith("*")) Object.keys(cache).filter((x) => x.startsWith(k.slice(0, -1))).forEach((x) => delete cache[x]);
+      else delete cache[k];
+    },
     shiftTypes: () => once("shiftTypes", async () => Object.fromEntries((await API.list("Shift Type", { fields: ["*"], order_by: "name asc" })).map((s) => [s.name, s]))),
     locations: () => once("locations", () => API.list("Shift Location", { fields: ["*"], order_by: "name asc" }).catch(() => [])),
     leaveTypes: () => once("leaveTypes", () => API.list("Leave Type", { fields: ["name", "is_lwp"], order_by: "name asc" }).catch(() => [])),
@@ -54,10 +58,12 @@
     },
     // تعيينات الشيفت الفعّالة في فترة
     async assignments(from, to, employee) {
-      const f = [["docstatus", "=", 1], ["status", "=", "Active"], ["start_date", "<=", to]];
-      if (employee) f.push(["employee", "=", employee]);
-      const rows = await API.list("Shift Assignment", { fields: ["name", "employee", "employee_name", "shift_type", "shift_location", "start_date", "end_date"], filters: f, order_by: "start_date desc" }).catch(() => []);
-      return rows.filter((a) => !a.end_date || a.end_date >= from);
+      return once(`assignments:${from}:${to}:${employee || ""}`, async () => {
+        const f = [["docstatus", "=", 1], ["status", "=", "Active"], ["start_date", "<=", to]];
+        if (employee) f.push(["employee", "=", employee]);
+        const rows = await API.list("Shift Assignment", { fields: ["name", "employee", "employee_name", "shift_type", "shift_location", "start_date", "end_date"], filters: f, order_by: "start_date desc" }).catch(() => []);
+        return rows.filter((a) => !a.end_date || a.end_date >= from);
+      });
     },
     // الشيفتات المعيّنة لموظف في يوم معيّن: [{shift, location}]
     shiftsOn(emp, date, assignments, types) {
@@ -99,6 +105,9 @@
     async unread() {
       try { return (await API.list("Notification Log", { fields: ["name"], filters: [["for_user", "=", Session.user], ["read", "=", 0]], limit: 99 })).length; } catch (e) { return 0; }
     },
+    async markRead(name) {
+      await API.admin.update("Notification Log", name, { read: 1 });
+    },
     async badge() {
       const n = await this.unread();
       document.querySelectorAll("[data-bell] .dot").forEach((d) => { d.textContent = n > 9 ? "9+" : n; d.hidden = !n; });
@@ -108,12 +117,50 @@
     },
     async open() {
       const s = UI.sheet({ title: "الإشعارات", body: loadingHTML, footer: `<button class="btn ghost" data-all>تعليم الكل كمقروء</button>` });
-      const rows = await API.list("Notification Log", { fields: ["name", "subject", "creation", "read", "document_type"], filters: [["for_user", "=", Session.user]], order_by: "creation desc", limit: 40 }).catch(() => []);
+      let rows;
+      try {
+        rows = await API.admin.list("Notification Log", { fields: ["name", "subject", "creation", "read", "document_type"], filters: [["for_user", "=", Session.user]], order_by: "creation desc", limit: 40 });
+      } catch (e) {
+        s.body.innerHTML = `<div class="note bad">${esc(e.message || e)}</div>`;
+        return;
+      }
       s.body.innerHTML = rows.length ? `<div class="group">${rows.map((r) => `<button class="row-item notif ${Number(r.read) ? "" : "unread"}" data-n="${esc(r.name)}" data-dt="${esc(r.document_type || "")}"><span class="ndot"></span><span class="ri-main"><span class="ri-t">${esc(String(r.subject || "").replace(/<[^>]+>/g, ""))}</span><span class="ri-s">${UI.ago(r.creation)}</span></span></button>`).join("")}</div>` : `<div class="empty">مفيش إشعارات</div>`;
-      s.body.querySelectorAll(".notif").forEach((b) => b.onclick = () => { API.update("Notification Log", b.dataset.n, { read: 1 }).catch(() => {}); s.close(); location.hash = this.route(b.dataset.dt); setTimeout(() => this.badge(), 500); });
-      s.el.querySelector("[data-all]").onclick = async () => {
-        await Promise.all(rows.filter((r) => !Number(r.read)).map((r) => API.update("Notification Log", r.name, { read: 1 }).catch(() => {})));
-        s.body.querySelectorAll(".unread").forEach((x) => x.classList.remove("unread")); this.badge();
+      s.body.querySelectorAll(".notif").forEach((b) => b.onclick = async () => {
+        b.disabled = true;
+        try {
+          await this.markRead(b.dataset.n);
+          b.classList.remove("unread");
+          await this.badge();
+          const route = this.route(b.dataset.dt);
+          s.close();
+          if (location.hash !== route) location.hash = route;
+        } catch (e) {
+          b.disabled = false;
+          toast(`تعذّر تعليم الإشعار كمقروء: ${e.message}`, "bad");
+        }
+      });
+      s.el.querySelector("[data-all]").onclick = async (e) => {
+        const button = e.currentTarget;
+        const unreadRows = rows.filter((r) => !Number(r.read));
+        if (!unreadRows.length) return;
+        button.disabled = true;
+        const outcomes = await Promise.all(unreadRows.map(async (row) => {
+          try {
+            await this.markRead(row.name);
+            return { row, error: null };
+          } catch (error) {
+            return { row, error };
+          }
+        }));
+        const failed = outcomes.filter((outcome) => outcome.error);
+        outcomes.filter((outcome) => !outcome.error).forEach(({ row }) => {
+          const item = [...s.body.querySelectorAll(".notif")].find((notification) => notification.dataset.n === row.name);
+          if (item) item.classList.remove("unread");
+          row.read = 1;
+        });
+        await this.badge();
+        button.disabled = false;
+        if (failed.length) toast(`تعذّر تعليم ${UI.num(failed.length)} إشعار كمقروء: ${failed[0].error.message}`, "bad");
       };
     },
   };
@@ -148,13 +195,19 @@
 
   let timer;
   async function route() {
-    const view = document.getElementById("view"); if (!view) return;
+    const root = document.getElementById("view"); if (!root) return;
     if (window.Face) Face.stop();
     const name = location.hash.replace(/^#\/?/, "").split("?")[0] || "home";
     document.querySelectorAll(".tabbar a").forEach((a) => a.classList.toggle("on", a.dataset.tab === name || (name === "mine" && a.dataset.tab === "inbox")));
-    view.innerHTML = loadingHTML; window.scrollTo(0, 0);
+    const view = document.createElement("div");
+    view.innerHTML = loadingHTML;
+    root.replaceChildren(view);
+    window.scrollTo(0, 0);
     try { await (Views[name] || Views.home)(view); }
-    catch (e) { console.error(e); view.innerHTML = `${pageHead("حصلت مشكلة")}<div class="note bad">${esc(e.message || e)}</div><button class="btn primary block" onclick="App.route()">جرّب تاني</button>`; }
+    catch (e) {
+      console.error(e);
+      view.innerHTML = `${pageHead("حصلت مشكلة")}<div class="note bad">${esc(e.message || e)}</div><button class="btn primary block" onclick="App.route()">جرّب تاني</button>`;
+    }
   }
 
   // بنتأكد في كل دخول وكل فتحة للصفحة إن الحساب مربوط بموظف Active، وبنجيب أدواره من جديد من ERPNext.

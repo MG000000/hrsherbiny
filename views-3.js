@@ -62,7 +62,7 @@ window.Views = window.Views || {};
     const d = UI.today();
     const [types, asg, logs] = await Promise.all([
       Data.shiftTypes(), Data.assignments(d, d, me.name),
-      API.list("Employee Checkin", { fields: ["*"], filters: [["employee", "=", me.name], ["time", ">=", d + " 00:00:00"]], order_by: "time asc" }).catch(() => []),
+      API.list("Employee Checkin", { fields: ["*"], filters: [["employee", "=", me.name], ["time", ">=", d + " 00:00:00"], ["time", "<=", d + " 23:59:59"]], order_by: "time asc" }).catch(() => []),
     ]);
     const emp = (await Data.employee(me.name).catch(() => null)) || me;
     const shifts = Data.shiftsOn(emp, d, asg, types);
@@ -201,10 +201,11 @@ window.Views = window.Views || {};
     const { emp, shifts, logs, types } = t;
     const [locs, enrollment, myBranches] = await Promise.all([Data.locations(), CONFIG.REQUIRE_FACE ? Face.loadEnrollment(emp.name) : null, Data.branches(emp.name)]);
     let enrolled = enrollment;
-    const last = logs[logs.length - 1];
+    const recorded = (type) => t.all.some((l) => l.log_type === type);
     const assigned = [...new Set(shifts.map((s) => s.shift.name))];
     const assignedShifts = [...new Map(shifts.map((s) => [s.shift.name, s.shift])).values()];
-    const st = { log: last && last.log_type === "IN" ? "OUT" : "IN", shift: assigned[0] || "", pos: null };
+    const st = { log: recorded("IN") ? "OUT" : "IN", shift: assigned[0] || "", pos: null };
+    let submitting = false;
 
     // الفروع المسموحة: جدول الفروع في ملف الموظف، + فرع تعيين الشيفت لو محدد
     const allowedLocs = () => {
@@ -214,7 +215,7 @@ window.Views = window.Views || {};
     };
 
     view.innerHTML = `${pageHead("البصمة", UI.dateAr(new Date()))}
-      <div class="choice"><button data-t="IN">${icon("login")} حضور</button><button data-t="OUT">${icon("logout")} انصراف</button></div>
+      <div class="choice"><button data-t="IN" ${recorded("IN") ? "disabled" : ""}>${icon("login")} حضور</button><button data-t="OUT" ${recorded("OUT") ? "disabled" : ""}>${icon("logout")} انصراف</button></div>
       <div class="form" style="margin-bottom:12px"><div class="field"><label for="sh">الشيفت</label>
         <select class="input" id="sh" ${assignedShifts.length ? "" : "disabled"}>${assignedShifts.length ? assignedShifts.map((s) => `<option value="${esc(s.name)}" ${s.name === st.shift ? "selected" : ""}>${esc(s.name)} (${s.start_time.slice(0, 5)} - ${s.end_time.slice(0, 5)})</option>`).join("") : '<option value="">مفيش شيفت متعيّن النهارده</option>'}</select>
         <span class="hint" id="shh"></span></div></div>
@@ -223,12 +224,17 @@ window.Views = window.Views || {};
         ${CONFIG.REQUIRE_FACE ? `<div class="row-item check-step" id="s-face"><span class="ri-ic">${icon("face")}</span><span class="ri-main"><span class="ri-t">بصمة الوجه</span><span class="ri-s">${enrollment ? "هتتقارن ببصمة وشك المتسجلة" : "أول مرة: هتسجّل بصمة وشك وتتحفظ"}</span></span></div>` : ""}
       </div>
       <div id="cam"></div>
-      <div id="act" style="margin-top:14px"><button class="btn primary block lg" id="go">${icon("finger")} ابدأ البصمة</button></div>
+      <div id="act" style="margin-top:14px">${recorded("IN") && recorded("OUT") ? '<div class="note">سجّلت بصمة الحضور والانصراف النهارده بالفعل.</div>' : `<button class="btn primary block lg" id="go">${icon("finger")} ابدأ بصمة ${st.log === "IN" ? "الحضور" : "الانصراف"}</button>`}</div>
       <h2 class="sec">بصماتك النهارده</h2>
       ${t.all.length ? `<div class="group">${t.all.map((l) => `<div class="row-item"><span class="ri-ic ${l.log_type === "IN" ? "in" : "out"}">${icon(l.log_type === "IN" ? "login" : "logout")}</span><span class="ri-main"><span class="ri-t">${l.log_type === "IN" ? "حضور" : "انصراف"}</span>${isPending(l) ? `<span class="ri-s">${esc(reasonOf(l))}، مستنية موافقة المدير</span>` : !valid(l) ? '<span class="ri-s" style="color:var(--out)">المدير رفضها</span>' : ""}</span><span class="ri-end ri-big">${UI.hm(l.time)}</span></div>`).join("")}</div>` : '<div class="empty">لسه مفيش بصمات النهارده</div>'}`;
 
     const setChoice = () => view.querySelectorAll(".choice button").forEach((b) => b.classList.toggle("on", b.dataset.t === st.log));
-    view.querySelectorAll(".choice button").forEach((b) => b.onclick = () => { st.log = b.dataset.t; setChoice(); });
+    view.querySelectorAll(".choice button").forEach((b) => b.onclick = () => {
+      if (recorded(b.dataset.t)) return;
+      st.log = b.dataset.t; setChoice();
+      const go = view.querySelector("#go");
+      if (go) go.innerHTML = `${icon("finger")} ابدأ بصمة ${st.log === "IN" ? "الحضور" : "الانصراف"}`;
+    });
     setChoice();
     const sh = view.querySelector("#sh"), shh = view.querySelector("#shh");
     const locText = () => { const l = allowedLocs(); view.querySelector("#s-loc .ri-s").textContent = l.length ? "لازم تكون في " + l.map((x) => x.location_name || x.name).join(" أو ") : "هيتسجل موقعك"; };
@@ -312,6 +318,12 @@ window.Views = window.Views || {};
     async function save() {
       act.innerHTML = loadingHTML;
       const now = UI.nowDT(), shift = types[st.shift];
+      const today = UI.today();
+      const current = await API.list("Employee Checkin", {
+        fields: ["name", "log_type"],
+        filters: [["employee", "=", emp.name], ["time", ">=", `${today} 00:00:00`], ["time", "<=", `${today} 23:59:59`]],
+      });
+      if (current.some((l) => l.log_type === st.log)) throw new Error(`سجّلت بصمة ${st.log === "IN" ? "الحضور" : "الانصراف"} بالفعل النهارده.`);
       const need = Calc.needsApproval({ logType: st.log, nowMin: Calc.dtMin(now), shift, isAssigned: assigned.includes(st.shift) });
       const ck = { employee: emp.name, log_type: st.log, time: now, device_id: "app", latitude: st.pos && st.pos.lat, longitude: st.pos && st.pos.lng };
       const what = st.log === "IN" ? "حضور" : "انصراف";
@@ -337,10 +349,14 @@ window.Views = window.Views || {};
       result("warn", "البصمة مستنية موافقة مديرك", `${esc(label)}. البصمة اتسجلت وهتتحسب أول ما ${manager ? "مديرك المباشر" : "مدير النظام"} يوافق، وهيوصلك إشعار بالرد.`);
     }
 
-    view.querySelector("#go").onclick = async () => {
+    const go = view.querySelector("#go");
+    if (go) go.onclick = async () => {
+      if (submitting) return;
+      submitting = true;
       act.innerHTML = loadingHTML;
       try { await geo(); await face(); await save(); }
       catch (e) {
+        submitting = false;
         act.innerHTML = `<div class="note bad">${esc(e.message)}</div><button class="btn primary block lg" id="re">جرّب تاني</button>`;
         act.querySelector("#re").onclick = () => App.route();
       }

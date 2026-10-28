@@ -2,6 +2,7 @@
 (function () {
   const { esc, icon, toast } = UI;
   const opt = (v, t, sel) => `<option value="${esc(v)}" ${v === sel ? "selected" : ""}>${esc(t ?? v)}</option>`;
+  const pad = (n) => String(n).padStart(2, "0");
   const dshort = (d) => UI.dateAr(d, { day: "numeric", month: "short" });
   const range = (a, b) => (a === b ? dshort(a) : `${dshort(a)} ← ${dshort(b)}`);
   const comment = (dt, name, content) => asUserOrAdmin((A) => A.insert("Comment", { comment_type: "Comment", reference_doctype: dt, reference_name: name, content }));
@@ -94,6 +95,247 @@
     ].sort((a, b) => (a.at < b.at ? 1 : -1));
     list.innerHTML = rows.length ? `<div class="group">${rows.map((r) => `<div class="row-item"><span class="ri-main"><span class="ri-t">${esc(r.who)}</span><span class="ri-s">${esc(r.what)}</span></span><span class="ri-end">${UI.statusTag(r.st)}</span></div>`).join("")}</div>` : '<div class="empty">لسه مفيش</div>';
   }
+
+  Views.report = async function (view) {
+    const now = new Date();
+    const state = { month: `${now.getFullYear()}-${pad(now.getMonth() + 1)}`, employee: "" };
+    const team = Session.canApprove ? await Data.team() : [];
+    const me = Session.employee;
+    if (!Session.canApprove && !me) {
+      view.innerHTML = `${pageHead("تقرير البصمة")}<div class="empty">حسابك مش مربوط بموظف.</div>`;
+      return;
+    }
+
+    view.innerHTML = `${pageHead("تقرير البصمة", "", Session.canApprove ? `<button class="ibtn no-print" id="csv" aria-label="تنزيل التقرير">${icon("download")}</button>` : "")}
+      <div class="two no-print" style="margin-bottom:12px">
+        <input class="input" type="month" id="month" value="${state.month}">
+        ${Session.canApprove ? `<select class="input" id="employee"><option value="">كل الموظفين</option>${team.map((e) => opt(e.name, e.employee_name)).join("")}</select>` : "<span></span>"}
+      </div>
+      <div id="report">${loadingHTML}</div>`;
+
+    let results = [], context = {};
+    const run = async () => {
+      const out = view.querySelector("#report");
+      if (!/^\d{4}-\d{2}$/.test(state.month)) { out.innerHTML = '<div class="empty">اختار شهر صحيح.</div>'; return; }
+      out.innerHTML = loadingHTML;
+      try {
+        const [year, month] = state.month.split("-").map(Number);
+        const from = `${state.month}-01`;
+        const to = `${state.month}-${pad(new Date(year, month, 0).getDate())}`;
+        const employees = Session.isAdmin
+          ? (state.employee ? team.filter((e) => e.name === state.employee) : team)
+          : Session.canApprove
+            ? [me, ...team].filter((e, i, all) => e && all.findIndex((x) => x.name === e.name) === i)
+              .filter((e) => !state.employee || e.name === state.employee)
+            : [me];
+        const employeeIds = employees.map((e) => e.name);
+        const employeeFilter = employeeIds.length === 1
+          ? [["employee", "=", employeeIds[0]]]
+          : [["employee", "in", employeeIds.length ? employeeIds : ["-"]]];
+        const A = Session.canApprove ? Data.api() : API;
+        const [types, assignments, checkins, leaves, leaveTypes, components, overtimeTypes, extras, salaryAssignments] = await Promise.all([
+          Data.shiftTypes(),
+          Data.assignments(from, to),
+          A.list("Employee Checkin", { fields: ["employee", "log_type", "time", "device_id"], filters: [["time", ">=", `${from} 00:00:00`], ["time", "<=", `${to} 23:59:59`], ...employeeFilter], order_by: "time asc" }),
+          A.list("Leave Application", { fields: ["employee", "leave_type", "from_date", "to_date", "status"], filters: [["docstatus", "=", 1], ["status", "=", "Approved"], ["from_date", "<=", to], ["to_date", ">=", from], ...employeeFilter] }).catch(() => []),
+          Data.leaveTypes(), Data.components(), Data.overtimeTypes(),
+          A.list("Additional Salary", { fields: ["employee", "salary_component", "amount", "payroll_date", "docstatus", "type"], filters: [["payroll_date", ">=", from], ["payroll_date", "<=", to], ["docstatus", "!=", 2], ...employeeFilter] }).catch(() => []),
+          A.list("Salary Structure Assignment", { fields: ["employee", "base", "from_date"], filters: [["employee", "in", employeeIds.length ? employeeIds : ["-"]], ["docstatus", "=", 1], ["from_date", "<=", to]], order_by: "from_date desc" }).catch(() => []),
+        ]);
+        const config = CONFIG.COMPONENTS;
+        const lwpTypes = new Set(leaveTypes.filter((t) => Number(t.is_lwp)).map((t) => t.name));
+        const missedAmount = Number((components[config.missed] || {}).amount) || 0;
+        const overtimeMultiplier = (shift) => (shift && shift.overtime_type && overtimeTypes[shift.overtime_type]
+          ? Number(overtimeTypes[shift.overtime_type].standard_multiplier)
+          : 0) || CONFIG.OVERTIME_MULTIPLIER_FALLBACK;
+        const bases = new Map();
+        salaryAssignments.forEach((assignment) => {
+          if (!bases.has(assignment.employee)) bases.set(assignment.employee, Number(assignment.base) || 0);
+        });
+        results = employees.map((employee, i) => Calc.monthly({
+          emp: employee,
+          shiftFor: (date) => (Data.shiftsOn(employee, date, assignments, types)[0] || {}).shift,
+          checkins, leaves, lwpTypes, base: bases.get(employee.name) || 0, missedAmount, otMultiplierFor: overtimeMultiplier,
+          extras: extras.filter((x) => ![config.late, config.missed, config.overtime].includes(x.salary_component)),
+          year, month, today: new Date(),
+        }));
+
+        context = { employees, types, assignments, overtimeTypes, components, extras, to };
+        const total = (key) => results.reduce((sum, row) => sum + (Number(row[key]) || 0), 0);
+        const extraAmount = (row, type) => row.extras
+          .filter((item) => (item.type || (components[item.salary_component] || {}).type) === type)
+          .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+        const posted = extras.filter((item) => [config.late, config.missed, config.overtime].includes(item.salary_component));
+        out.innerHTML = results.length ? `
+          <div class="today-strip" style="margin:0 0 12px">
+            <div class="late"><b>${UI.money(total("lateDeduct"))}</b><span>خصم تأخير</span></div>
+            <div class="in"><b>${UI.money(total("otPay"))}</b><span>أوفر تايم</span></div>
+            <div class="out"><b>${UI.num(total("missed"))}</b><span>نسيان بصمة</span></div>
+            <div><b>${UI.num(total("absent"))}</b><span>أيام غياب</span></div>
+          </div>
+          ${Session.isAdmin ? `<div class="no-print" style="margin-bottom:12px"><button class="btn primary block" id="post">${icon("coins")} إرسال للمرتب</button>${posted.length ? `<p class="hint" style="text-align:center;margin:6px 0 0">اتبعت قبل كده ${UI.num(posted.length)} بند للشهر ده</p>` : ""}</div>` : ""}
+          <div class="table-wrap"><table><thead><tr><th>الموظف</th><th class="n">حضور</th><th class="n">غياب</th><th class="n">بدون مرتب</th><th class="n">تأخير + مبكر</th><th class="n">دقائق الخصم</th><th class="n">خصم التأخير</th><th class="n">نسيان بصمة</th><th class="n">أوفر تايم</th><th class="n">قيمته</th><th class="n">مكافآت</th><th class="n">خصومات</th></tr></thead><tbody>
+            ${results.map((r, i) => `<tr data-i="${i}" style="cursor:pointer"><td><b>${esc(r.employee_name)}</b>${r.pending ? ' <span class="tag warn">مستني</span>' : ""}</td><td class="n">${UI.num(r.present)}</td><td class="n ${r.absent ? "neg" : ""}">${UI.num(r.absent)}</td><td class="n">${r.lwp ? UI.num(r.lwp) : "—"}</td><td class="n">${UI.mins(r.lateTotal)}</td><td class="n">${r.lateDeductMin ? `${UI.num(r.excess)} × ${UI.num(r.mult)}` : "—"}</td><td class="n ${r.lateDeduct ? "neg" : ""}">${r.lateDeduct ? UI.money(r.lateDeduct) : "—"}</td><td class="n ${r.missed ? "neg" : ""}">${r.missed ? `${UI.num(r.missed)} (${UI.money(r.missedDeduct)})` : "—"}</td><td class="n">${r.otMin ? UI.mins(r.otMin) : "—"}</td><td class="n ${r.otPay ? "pos" : ""}">${r.otPay ? UI.money(r.otPay) : "—"}</td><td class="n pos">${extraAmount(r, "Earning") ? UI.money(extraAmount(r, "Earning")) : "—"}</td><td class="n neg">${extraAmount(r, "Deduction") ? UI.money(extraAmount(r, "Deduction")) : "—"}</td></tr>`).join("")}
+          </tbody></table></div><p class="hint" style="margin:8px 4px">دوس على الموظف عشان تشوف تفاصيل أيامه. الإجازة بدون مرتب ERPNext بيخصمها لوحده في المرتب.</p>` : '<div class="empty">مفيش بيانات للموظفين في الشهر ده.</div>';
+        out.querySelectorAll("tr[data-i]").forEach((row) => { row.onclick = () => reportDetails(results[row.dataset.i]); });
+        const post = out.querySelector("#post");
+        if (post) post.onclick = () => postPayroll(results, context, run);
+      } catch (e) {
+        out.innerHTML = `<div class="note bad">${esc(e.message || e)}</div>`;
+      }
+    };
+
+    view.querySelector("#month").onchange = (e) => { state.month = e.target.value; run(); };
+    const employee = view.querySelector("#employee");
+    if (employee) employee.onchange = (e) => { state.employee = e.target.value; run(); };
+    const csv = view.querySelector("#csv");
+    if (csv) csv.onclick = () => {
+      const header = ["الموظف", "الأساسي", "سعر الدقيقة", "حضور", "غياب", "إجازة", "بدون مرتب", "تأخير", "انصراف مبكر", "السماح", "الزيادة", "المعامل", "خصم التأخير", "نسيان بصمة", "خصم النسيان", "أوفر تايم (د)", "قيمة الأوفر"];
+      const rows = results.map((r) => [r.employee_name, r.base, Calc.r2(r.minuteRate), r.present, r.absent, r.leave, r.lwp, r.lateMin, r.earlyMin, r.grace, r.excess, r.mult, r.lateDeduct, r.missed, r.missedDeduct, r.otMin, r.otPay]);
+      const csvRows = [header, ...rows].map((row) => row.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(new Blob(["\uFEFF", csvRows], { type: "text/csv;charset=utf-8" }));
+      link.href = url;
+      link.download = `تقرير-البصمة-${state.month}.csv`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    await run();
+  };
+
+  function reportDetails(report) {
+    const statuses = { present: ["حاضر", "ok"], absent: ["غايب", "bad"], leave: ["إجازة", "info"], off: ["إجازة أسبوعية", "mute"], today: ["النهارده", "mute"] };
+    UI.sheet({
+      title: report.employee_name, wide: true, footer: false,
+      body: `<dl class="kv">
+        <dt>المرتب الأساسي</dt><dd>${report.base ? UI.money(report.base) : "مفيش Salary Structure Assignment"}</dd>
+        <dt>سعر الدقيقة</dt><dd>${UI.money(report.minuteRate)}</dd>
+        <dt>التأخير والمبكر</dt><dd>${UI.num(report.lateMin)} + ${UI.num(report.earlyMin)} = ${UI.num(report.lateTotal)} دقيقة</dd>
+        <dt>بعد السماح الشهري</dt><dd>(${UI.num(report.lateTotal)} − ${UI.num(report.grace)}) × ${UI.num(report.mult)} = ${UI.num(report.lateDeductMin)} دقيقة ← ${UI.money(report.lateDeduct)}</dd>
+        <dt>الأوفر تايم</dt><dd>${UI.mins(report.otMin)} ← ${UI.money(report.otPay)}</dd>
+        <dt>نسيان البصمة</dt><dd>${UI.num(report.missed)} مرة ← ${UI.money(report.missedDeduct)}</dd></dl>
+        <h2 class="sec">الأيام</h2><div class="group">${report.days.map((day) => {
+          const [label, kind] = statuses[day.status] || [day.status, "mute"];
+          const detail = day.status === "present"
+            ? `${UI.hm(day.in)} ← ${UI.hm(day.out)}${day.late ? `، تأخير ${UI.mins(day.late)}` : ""}${day.early ? `، مبكر ${UI.mins(day.early)}` : ""}${day.ot ? `، أوفر ${UI.mins(day.ot)}` : ""}`
+            : day.leaveType || day.shift || "";
+          return `<div class="row-item"><span class="ri-main"><span class="ri-t">${UI.dateAr(day.date, { weekday: "short", day: "numeric", month: "short" })}</span><span class="ri-s">${esc(detail)}</span></span><span class="ri-end"><span class="tag ${kind}">${label}</span>${day.missed ? ' <span class="tag bad">نسيان</span>' : ""}${day.pending ? ' <span class="tag warn">مستني</span>' : ""}</span></div>`;
+        }).join("")}</div>`,
+    });
+  }
+
+  async function postPayroll(results, context, refresh) {
+    const components = CONFIG.COMPONENTS;
+    const missing = [components.late, components.missed, components.overtime].filter((name) => !context.components[name]);
+    const lines = [];
+    results.forEach((result) => {
+      const employee = context.employees.find((e) => e.name === result.employee);
+      const shift = (Data.shiftsOn(employee, context.to, context.assignments, context.types)[0] || {}).shift;
+      const overtimeComponent = (shift && shift.overtime_type && context.overtimeTypes[shift.overtime_type] && context.overtimeTypes[shift.overtime_type].overtime_salary_component) || components.overtime;
+      [[components.late, result.lateDeduct], [components.missed, result.missedDeduct], [overtimeComponent, result.otPay]].forEach(([component, amount]) => {
+        if (amount > 0) lines.push({ employee, component, amount, exists: context.extras.some((item) => item.employee === employee.name && item.salary_component === component) });
+      });
+    });
+    const todo = lines.filter((line) => !line.exists);
+    const sheet = UI.sheet({
+      title: "إرسال للمرتب",
+      body: `${missing.length ? `<div class="note bad">لازم تعمل مكونات المرتب دي الأول في ERPNext (Salary Component): ${missing.map(esc).join("، ")}</div>` : ""}
+        <p style="margin-top:0">هيتعمل <b>${UI.num(todo.length)}</b> بند Additional Salary بتاريخ ${dshort(context.to)}.${lines.length > todo.length ? ` وفيه ${UI.num(lines.length - todo.length)} بند اتبعت قبل كده هيتساب زي ما هو.` : ""}</p>
+        ${todo.length ? `<div class="group">${todo.map((line) => `<div class="row-item"><span class="ri-main"><span class="ri-t">${esc(line.employee.employee_name)}</span><span class="ri-s">${esc(line.component)}</span></span><span class="ri-end ri-big">${UI.money(line.amount)}</span></div>`).join("")}</div>` : '<div class="empty">مفيش حاجة جديدة تتبعت</div>'}`,
+      footer: `<button class="btn ghost" data-close>إلغاء</button><button class="btn primary" id="go" ${!todo.length || missing.length ? "disabled" : ""}>إرسال</button>`,
+    });
+    sheet.el.querySelector("#go").onclick = async (event) => {
+      const button = event.currentTarget; button.disabled = true; button.innerHTML = '<span class="spin"></span>';
+      let sent = 0;
+      for (const line of todo) {
+        try {
+          await API.insert("Additional Salary", {
+            employee: line.employee.name, company: line.employee.company, salary_component: line.component,
+            amount: line.amount, payroll_date: context.to, overwrite_salary_structure_amount: 1, docstatus: 1,
+          });
+          sent++;
+        } catch (e) { toast(`${line.employee.employee_name}: ${e.message}`, "bad"); }
+      }
+      toast(`اتبعت ${UI.num(sent)} بند للمرتب`, "ok"); sheet.close(); refresh();
+    };
+  }
+
+  Views.assign = async function (view) {
+    if (!Session.isAdmin) return deny(view, "تعيين الشيفتات");
+    const today = UI.today();
+    const [employees, shifts, locations, assignments] = await Promise.all([
+      Data.employees(), Data.shiftTypes(), Data.locations(), Data.assignments(today, "9999-12-31"),
+    ]);
+    let query = "";
+    const draw = () => {
+      const filtered = employees.filter((e) => !query || e.employee_name.includes(query));
+      view.innerHTML = `${pageHead("تعيين الشيفتات", "توزيع الموظفين على الشيفتات والفروع", `<button class="ibtn" id="new" aria-label="تعيين جديد">${icon("plus")}</button>`)}
+        <div class="field"><input class="input" id="q" placeholder="ابحث عن موظف" value="${esc(query)}"></div>
+        <div class="group">${filtered.map((employee) => {
+          const current = assignments.filter((a) => a.employee === employee.name);
+          return `<div class="req"><div class="row-item"><span class="avatar">${esc(UI.initials(employee.employee_name))}</span><span class="ri-main"><span class="ri-t">${esc(employee.employee_name)}</span><span class="ri-s">${current.length ? "" : employee.default_shift ? `الافتراضي: ${esc(employee.default_shift)}` : "مالوش شيفت"}</span></span><button class="btn ghost sm" data-add="${esc(employee.name)}">${icon("plus")} تعيين</button></div>
+            ${current.map((assignment) => `<div class="row-item" style="padding-inline-start:66px"><span class="ri-main"><span class="ri-t">${esc(assignment.shift_type)}</span><span class="ri-s">${assignment.shift_location ? `${esc(assignment.shift_location)}، ` : ""}من ${dshort(assignment.start_date)}${assignment.end_date ? ` لحد ${dshort(assignment.end_date)}` : " ومستمر"}</span></span><button class="btn bad sm" data-stop="${esc(assignment.name)}">إيقاف</button></div>`).join("")}</div>`;
+        }).join("")}</div>
+        <p class="hint" style="margin:10px 4px">لو الموظف بيشتغل في أكتر من فرع، اعمله تعيينًا لكل فرع. لازم تفعيل Allow Multiple Shift Assignments for Same Date في HR Settings.</p>`;
+      view.querySelector("#new").onclick = () => openForm([]);
+      view.querySelectorAll("[data-add]").forEach((button) => { button.onclick = () => openForm([button.dataset.add]); });
+      view.querySelectorAll("[data-stop]").forEach((button) => { button.onclick = async () => {
+        if (!(await UI.confirmBox("إيقاف التعيين", "التعيين هيتلغى والموظف هيرجع لشيفته الافتراضي.", "إيقاف", "bad"))) return;
+        try {
+          await API.cancel("Shift Assignment", button.dataset.stop);
+          Data.clear("assignments:*");
+          const index = assignments.findIndex((assignment) => assignment.name === button.dataset.stop);
+          if (index >= 0) assignments.splice(index, 1);
+          toast("اتوقف التعيين", "ok"); draw();
+        } catch (e) { toast(e.message, "bad"); }
+      }; });
+      const input = view.querySelector("#q");
+      input.oninput = () => {
+        query = input.value.trim(); clearTimeout(input.timer);
+        input.timer = setTimeout(() => {
+          draw();
+          const next = view.querySelector("#q"); next.focus(); next.setSelectionRange(next.value.length, next.value.length);
+        }, 200);
+      };
+    };
+    const openForm = (preselected) => {
+      const sheet = UI.sheet({
+        title: "تعيين شيفت",
+        body: `<div class="field"><label for="shift">الشيفت</label><select class="input" id="shift">${Object.keys(shifts).map((name) => opt(name)).join("")}</select></div>
+          <div class="field"><label for="location">الفرع</label><select class="input" id="location"><option value="">من غير فرع (من غير شرط موقع)</option>${locations.map((location) => opt(location.name, location.location_name || location.name)).join("")}</select></div>
+          <div class="two"><div class="field"><label for="start">من</label><input class="input" id="start" type="date" value="${today}" required></div><div class="field"><label for="end">لحد (اختياري)</label><input class="input" id="end" type="date"></div></div>
+          <div class="field"><label>الموظفين</label><div class="pick-list">${employees.map((e) => `<label><input type="checkbox" value="${esc(e.name)}" ${preselected.includes(e.name) ? "checked" : ""}> ${esc(e.employee_name)}</label>`).join("")}</div></div>`,
+        footer: `<button class="btn ghost" data-close>إلغاء</button><button class="btn primary" id="save">تعيين</button>`,
+      });
+      sheet.el.querySelector("#save").onclick = async (event) => {
+        const button = event.currentTarget;
+        const ids = [...sheet.el.querySelectorAll(".pick-list input:checked")].map((input) => input.value);
+        const start = sheet.el.querySelector("#start").value;
+        const end = sheet.el.querySelector("#end").value;
+        if (!ids.length) return toast("اختار موظفًا واحدًا على الأقل", "bad");
+        if (!start || (end && end < start)) return toast("راجع تاريخ بداية ونهاية التعيين", "bad");
+        button.disabled = true; button.innerHTML = '<span class="spin"></span>';
+        const outcomes = await Promise.all(ids.map(async (id) => {
+          const employee = employees.find((e) => e.name === id);
+          try {
+            const assignment = await API.insertSubmit("Shift Assignment", {
+              employee: id, company: employee.company, shift_type: sheet.el.querySelector("#shift").value,
+              shift_location: sheet.el.querySelector("#location").value || null, start_date: start,
+              end_date: end || null, status: "Active",
+            });
+            Data.clear("assignments:*");
+            assignments.push({ ...assignment, employee_name: employee.employee_name });
+            return null;
+          } catch (e) { return `${employee.employee_name}: ${e.message}`; }
+        }));
+        const failures = outcomes.filter(Boolean);
+        if (failures.length) toast(failures.join("، "), "bad");
+        if (ids.length > failures.length) toast(`اتعيّن ${UI.num(ids.length - failures.length)} موظف`, "ok");
+        sheet.close(); draw();
+      };
+    };
+    draw();
+  };
 
   function decideSheet(title, ok, extra = "") {
     return new Promise((resolve) => {
