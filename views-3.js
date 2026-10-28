@@ -269,8 +269,7 @@
           <span class="hint">المرتب الأساسي بيتعدّل من Salary Structure Assignment على ERPNext.</span>`,
         footer: `<button class="btn ghost" data-close>إلغاء</button><button class="btn primary" id="sv">حفظ</button>`,
       });
-      const ff = faceOf(e.name), jpg = ff.find((f) => /\.jpe?g$/i.test(f.file_name));
-      if (jpg) API.admin.fileBlobUrl(jpg.file_url).then((u) => { const el = s.el.querySelector("#fimg"); el.innerHTML = `<img src="${esc(u)}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:12px">`; el.style.overflow = "hidden"; el.onclick = () => UI.viewImage(u); }).catch(() => {});
+      if (faceOf(e.name).length) Face.enrollmentPhoto(e.name).then((u) => { if (!u) return; const el = s.el.querySelector("#fimg"); el.innerHTML = `<img src="${esc(u)}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:12px">`; el.style.overflow = "hidden"; el.onclick = () => UI.viewImage(u); }).catch(() => {});
       const fr = s.el.querySelector("#freset");
       if (fr) fr.onclick = async () => {
         if (!(await UI.confirmBox("مسح بصمة الوش", `بصمة وش ${e.employee_name} هتتمسح، وأول مرة يبصم بعد كده هيسجّل بصمة جديدة.`, "مسح", "bad"))) return;

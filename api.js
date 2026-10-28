@@ -88,7 +88,9 @@
         if (!fileUrl || /^(data:|blob:)/.test(fileUrl)) return fileUrl;
         const url = /^https?:/.test(fileUrl) ? fileUrl : base() + fileUrl;
         for (const au of [auth, "admin"]) {
-          const res = await fetch(url, { headers: { Authorization: au === "admin" ? ADMIN() : userAuth }, credentials: "omit" });
+          let res;
+          try { res = await fetch(url, { headers: { Authorization: au === "admin" ? ADMIN() : userAuth }, credentials: "omit" }); }
+          catch (e) { throw new ApiError("مش قادر أحمّل الملف من ERPNext", 0, e); }
           if (res.ok) return URL.createObjectURL(await res.blob());
         }
         throw new ApiError("مش قادر أحمّل الصورة", 404);

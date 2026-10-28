@@ -17,7 +17,8 @@
     if (!loading) loading = (async () => {
       await loadScript(CONFIG.FACE_API_URL);
       const u = CONFIG.FACE_MODELS_URL;
-      await Promise.all([faceapi.nets.tinyFaceDetector.loadFromUri(u), faceapi.nets.faceLandmark68Net.loadFromUri(u), faceapi.nets.faceRecognitionNet.loadFromUri(u)]);
+      try { await Promise.all([faceapi.nets.tinyFaceDetector.loadFromUri(u), faceapi.nets.faceLandmark68Net.loadFromUri(u), faceapi.nets.faceRecognitionNet.loadFromUri(u)]); }
+      catch (e) { throw new Error("مش قادر أحمّل ملفات التعرف على الوجه من cdn.jsdelivr.net. جرّب نت تاني، أو اقفل مانع الإعلانات للصفحة دي."); }
     })().catch((e) => { loading = null; throw e; });
     return loading;
   }
@@ -50,33 +51,46 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ===== البصمة المتسجلة على ERPNext =====
+  // بتتحفظ في Comment على ملف الموظف (بتتقري بالـ API عادي)، مش كملف مرفق،
+  // لأن تحميل الملفات من موقع تاني (GitHub Pages) بيترفض على Frappe Cloud.
+  const MARK = "FACE1:";
+  const b64e = (str) => btoa(unescape(encodeURIComponent(str)));
+  const b64d = (str) => decodeURIComponent(escape(atob(str)));
   async function enrollmentFiles(employee) {
-    const f = [["attached_to_doctype", "=", "Employee"], ["file_name", "like", `${FILE_PREFIX}%`]];
-    if (employee) f.push(["attached_to_name", "=", employee]);
-    return API.admin.list("File", { fields: ["name", "file_name", "file_url", "attached_to_name", "creation"], filters: f, order_by: "creation desc" }).catch(() => []);
+    const f = [["reference_doctype", "=", "Employee"], ["comment_type", "=", "Info"], ["content", "like", `%${MARK}%`]];
+    if (employee) f.push(["reference_name", "=", employee]);
+    const rows = await API.admin.list("Comment", { fields: ["name", "reference_name", "creation"], filters: f, order_by: "creation desc" }).catch(() => []);
+    return rows.map((r) => ({ ...r, attached_to_name: r.reference_name }));
   }
   async function loadEnrollment(employee) {
-    const files = await enrollmentFiles(employee);
-    const json = files.find((f) => /\.json$/i.test(f.file_name));
-    if (!json) return null;
-    const url = await API.admin.fileBlobUrl(json.file_url);
-    try { const data = await (await fetch(url)).json(); return data && Array.isArray(data.descriptors) && data.descriptors.length ? data : null; }
-    catch (e) { return null; }
+    const rows = await API.admin.list("Comment", { fields: ["name", "content", "creation"], filters: [["reference_doctype", "=", "Employee"], ["reference_name", "=", employee], ["comment_type", "=", "Info"], ["content", "like", `%${MARK}%`]], order_by: "creation desc", limit: 1 });
+    if (!rows.length) return null;
+    try {
+      const txt = String(rows[0].content).replace(/<[^>]+>/g, "").replace(/\s+/g, "");
+      const raw = txt.slice(txt.indexOf(MARK) + MARK.length);
+      const data = JSON.parse(b64d(raw));
+      return data && Array.isArray(data.descriptors) && data.descriptors.length ? data : null;
+    } catch (e) { return null; }
+  }
+  function thumb(canvas) {
+    const c = document.createElement("canvas"), w = 160, h = Math.round((canvas.height / canvas.width) * w);
+    c.width = w; c.height = h; c.getContext("2d").drawImage(canvas, 0, 0, w, h);
+    return c.toDataURL("image/jpeg", 0.7);
   }
   async function saveEnrollment(emp, descriptors, photo) {
-    const data = { v: 1, employee: emp.name, created: UI.nowDT(), by: Session.user, descriptors };
-    const json = new File([JSON.stringify(data)], `${FILE_PREFIX}${emp.name}.json`, { type: "application/json" });
-    await API.admin.upload(json, { doctype: "Employee", docname: emp.name, is_private: 1 });
-    if (photo) {
-      const blob = await new Promise((r) => photo.toBlob(r, "image/jpeg", 0.85));
-      if (blob) await API.admin.upload(new File([blob], `${FILE_PREFIX}${emp.name}.jpg`, { type: "image/jpeg" }), { doctype: "Employee", docname: emp.name, is_private: 1 });
-    }
+    const round = (d) => d.map((x) => Math.round(x * 1e5) / 1e5);
+    const data = { v: 1, employee: emp.name, created: UI.nowDT(), by: Session.user, descriptors: descriptors.map(round), photo: photo ? thumb(photo) : null };
+    await API.admin.insert("Comment", { comment_type: "Info", reference_doctype: "Employee", reference_name: emp.name, content: MARK + b64e(JSON.stringify(data)) });
     return data;
   }
+  async function enrollmentPhoto(employee) { const d = await loadEnrollment(employee).catch(() => null); return d && d.photo; }
   async function resetEnrollment(employee) {
-    const files = await enrollmentFiles(employee);
-    for (const f of files) await API.admin.remove("File", f.name);
-    return files.length;
+    const rows = await enrollmentFiles(employee);
+    for (const r of rows) await API.admin.remove("Comment", r.name);
+    // ملفات النسخة القديمة لو موجودة
+    const old = await API.admin.list("File", { fields: ["name"], filters: [["attached_to_doctype", "=", "Employee"], ["attached_to_name", "=", employee], ["file_name", "like", "face-enroll-%"]] }).catch(() => []);
+    for (const f of old) await API.admin.remove("File", f.name).catch(() => {});
+    return rows.length;
   }
 
   // وضع تجريبي: لو مكتبة الوجه مش متاحة، بنحاكي البصمة عشان تقدر تجرّب باقي الخطوات
@@ -119,5 +133,5 @@
     return { ok: best <= th, distance: best, reason: best <= th ? "" : "الوش مش مطابق للبصمة المتسجلة." };
   }
 
-  window.Face = { ensureModels, startCamera, stop, snapshot, enroll, verify, loadEnrollment, enrollmentFiles, resetEnrollment, FILE_PREFIX };
+  window.Face = { enrollmentPhoto, ensureModels, startCamera, stop, snapshot, enroll, verify, loadEnrollment, enrollmentFiles, resetEnrollment, FILE_PREFIX };
 })();
