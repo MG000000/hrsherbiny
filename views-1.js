@@ -2,8 +2,18 @@
 window.Views = window.Views || {};
 (function () {
   const { esc, icon, toast } = UI;
-  const valid = (c) => !String(c.device_id || "").startsWith("app-rejected");
-  window.validCheckin = valid;
+  // البصمة المرفوضة مش بتتحسب، والمستنية بتتعلّم
+  const valid = (c) => c.workflow_state !== "Rejected" && !String(c.device_id || "").startsWith("app-rejected");
+  const isPending = (c) => c.workflow_state === "Pending" || String(c.device_id || "").startsWith("app-pending");
+  // سبب الطلب محفوظ في device_id: app:late:37 / app:early:20 / app:shift:اسم الشيفت
+  function reasonOf(c) {
+    const [, kind, val] = String(c.device_id || "").split(":");
+    if (kind === "late") return `حضور متأخر ${UI.mins(val)}`;
+    if (kind === "early") return `انصراف مبكر ${UI.mins(val)}`;
+    if (kind === "shift") { const n = String(c.device_id).split(":").slice(2).join(":"); return `بصمة في ${n.includes("شيفت") ? "" : "شيفت "}${n}`; }
+    return "بصمة محتاجة موافقة";
+  }
+  Object.assign(window, { validCheckin: valid, isPendingCheckin: isPending, reasonOf });
   const timeParts = (d = new Date()) => {
     const s = d.toLocaleTimeString("ar-EG", { hour: "numeric", minute: "2-digit" });
     const m = s.match(/^(.*?)\s*([صم])$/);
@@ -50,11 +60,11 @@ window.Views = window.Views || {};
     const d = UI.today();
     const [types, asg, logs] = await Promise.all([
       Data.shiftTypes(), Data.assignments(d, d, me.name),
-      API.list("Employee Checkin", { fields: ["log_type", "time", "device_id"], filters: [["employee", "=", me.name], ["time", ">=", d + " 00:00:00"]], order_by: "time asc" }).catch(() => []),
+      API.list("Employee Checkin", { fields: ["*"], filters: [["employee", "=", me.name], ["time", ">=", d + " 00:00:00"]], order_by: "time asc" }).catch(() => []),
     ]);
     const emp = (await Data.employee(me.name).catch(() => null)) || me;
     const shifts = Data.shiftsOn(emp, d, asg, types);
-    return { emp, shifts, logs: logs.filter(valid), types };
+    return { emp, shifts, logs: logs.filter(valid), all: logs, types };
   }
   window.myToday = myToday;
 
@@ -67,7 +77,7 @@ window.Views = window.Views || {};
       const shift = t.shifts[0] && t.shifts[0].shift;
       const ins = t.logs.filter((l) => l.log_type === "IN"), outs = t.logs.filter((l) => l.log_type === "OUT");
       const last = t.logs[t.logs.length - 1];
-      const pending = t.logs.some((l) => String(l.device_id || "").startsWith("app-pending"));
+      const pending = t.logs.some(isPending);
       let p = 0;
       if (shift) { const b = Calc.bounds(shift); const nowM = Calc.dtMin(UI.nowDT()); p = Math.max(0, Math.min(1, (nowM - b.start) / b.length)); }
       const C = 2 * Math.PI * 86;
@@ -91,19 +101,21 @@ window.Views = window.Views || {};
     }
 
     let strip = "";
-    if (Session.isHR || (await Data.team()).length) {
+    if (Session.canApprove && (await Data.team()).length) {
       const [b, pend] = await Promise.all([boardData().catch(() => null), countPending()]);
       if (b) strip = `<a class="today-strip" href="#/board"><div class="in"><b>${UI.num(b.present.length)}</b><span>حاضر</span></div><div class="out"><b>${UI.num(b.absent.length)}</b><span>غايب</span></div><div class="late"><b>${UI.num(b.late)}</b><span>متأخر</span></div><div class="pend"><b>${UI.num(pend)}</b><span>طلب مستني</span></div></a>`;
     }
 
     const row = (href, ic, cls, t, s) => `<a class="row-item" href="${href}"><span class="ri-ic ${cls}">${icon(ic)}</span><span class="ri-main"><span class="ri-t">${t}</span><span class="ri-s">${s}</span></span><span class="chev">${icon("chev")}</span></a>`;
-    view.innerHTML = `${dial}${strip}
+    const needSetup = Session.isAdmin && !API.isDemo() && !(await Data.workflowReady());
+    const banner = needSetup ? `<a class="row-item" href="#/setup" style="background:var(--cobalt-soft);border-radius:var(--r);margin-bottom:12px"><span class="ri-ic brand-ic">${icon("gear")}</span><span class="ri-main"><span class="ri-t">السيستم محتاج يتجهز</span><span class="ri-s">دوسة واحدة بتعمل كل اللي ناقص على ERPNext</span></span><span class="chev">${icon("chev")}</span></a>` : "";
+    view.innerHTML = `${banner}${dial}${strip}
       <h2 class="sec">اختصارات</h2>
       <div class="group">
-        ${Session.isHR || strip ? row("#/board", "users", "in", "الحضور والانصراف النهارده", "مين حاضر ومين غايب") : ""}
+        ${strip ? row("#/board", "users", "in", "الحضور والانصراف النهارده", "مين حاضر ومين غايب") : ""}
         ${Session.isAdmin ? row("#/assign", "swap", "", "تعيين الشيفتات", "وزّع الموظفين على الشيفتات والفروع") : ""}
         ${t ? row("#/mine", "cal", "", "طلب إجازة", "واعرف حالة طلباتك") : ""}
-        ${row("#/report", "report", "late", "تقرير البصمة", Session.isHR ? "تأخير وأوفر تايم كل الموظفين" : "تأخيرك وأوفر تايمك الشهر ده")}
+        ${row("#/report", "report", "late", "تقرير البصمة", Session.isAdmin ? "تأخير وأوفر تايم كل الموظفين" : Session.canApprove ? "تأخيرك وتأخير فريقك" : "تأخيرك وأوفر تايمك الشهر ده")}
       </div>`;
     const clk = view.querySelector("#hclk");
     if (clk) { const iv = setInterval(() => { if (!document.body.contains(clk)) return clearInterval(iv); clk.textContent = timeParts()[0]; }, 15000); }
@@ -112,29 +124,26 @@ window.Views = window.Views || {};
   async function countPending() {
     try {
       const p = await pendingRequests();
-      return p.att.length + p.shift.length + p.leave.length;
+      return p.att.length + p.leave.length;
     } catch (e) { return 0; }
   }
 
-  // الطلبات المستنية: البصمات اللي محتاجة موافقة بتتعرف من device_id في Employee Checkin
+  // الطلبات المستنية: بصمات Employee Checkin حالتها Pending في الـ Workflow، وطلبات الإجازة المفتوحة
+  // الأدمن بيشوف الكل، والـ HR Manager بيشوف اللي هو مديرهم المباشر بس
   async function pendingRequests() {
-    const team = new Set((await Data.team()).map((e) => e.name));
-    const ok = (emp) => team.has(emp);
     const out = { att: [], shift: [], leave: [] };
-    if (Session.isHR) {
-      const cks = await API.list("Employee Checkin", { fields: ["name", "employee", "employee_name", "log_type", "time", "device_id", "latitude", "longitude"], filters: [["device_id", "like", "app-pending:AR:%"]] }).catch(() => []);
-      out.att = cks.filter((c) => ok(c.employee)).map((c) => ({ ...c, request: c.device_id.split(":")[2] }));
-    }
-    if (Session.isShiftApprover) {
-      const sr = await API.list("Shift Request", { fields: ["*"], filters: [["docstatus", "=", 0], ["status", "=", "Draft"]] }).catch(() => []);
-      out.shift = sr.filter((r) => Session.isHR ? ok(r.employee) : r.approver === Session.user);
-    }
-    if (Session.isLeaveApprover) {
-      const lv = await API.list("Leave Application", { fields: ["*"], filters: [["docstatus", "=", 0], ["status", "=", "Open"]] }).catch(() => []);
-      out.leave = lv.filter((r) => Session.isHR ? ok(r.employee) : r.leave_approver === Session.user);
-    }
-    const me = Session.employee && Session.employee.name;
-    ["att", "shift", "leave"].forEach((k) => (out[k] = out[k].filter((r) => r.employee !== me || Session.isAdmin)));
+    const team = (await Data.team()).filter((e) => Session.isAdmin || e.name !== (Session.employee && Session.employee.name));
+    if (!team.length) return out;
+    const ids = team.map((e) => e.name);
+    const A = Data.api();
+    const [cks, legacy, lv] = await Promise.all([
+      A.list("Employee Checkin", { fields: ["*"], filters: [["workflow_state", "=", "Pending"], ["employee", "in", ids]], order_by: "time desc" }).catch(() => []),
+      A.list("Employee Checkin", { fields: ["*"], filters: [["device_id", "like", "app-pending%"], ["employee", "in", ids]] }).catch(() => []),
+      A.list("Leave Application", { fields: ["*"], filters: [["docstatus", "=", 0], ["status", "=", "Open"], ["employee", "in", ids]] }).catch(() => []),
+    ]);
+    const seen = new Set();
+    out.att = [...cks, ...legacy].filter((c) => !seen.has(c.name) && seen.add(c.name));
+    out.leave = lv;
     return out;
   }
   window.pendingRequests = pendingRequests;
@@ -144,8 +153,8 @@ window.Views = window.Views || {};
     const d = UI.today();
     const [team, types, asg, logs, leaves] = await Promise.all([
       Data.team(), Data.shiftTypes(), Data.assignments(d, d),
-      API.list("Employee Checkin", { fields: ["employee", "log_type", "time", "device_id"], filters: [["time", ">=", d + " 00:00:00"], ["time", "<=", d + " 23:59:59"]], order_by: "time asc" }),
-      API.list("Leave Application", { fields: ["employee", "leave_type"], filters: [["status", "=", "Approved"], ["docstatus", "=", 1], ["from_date", "<=", d], ["to_date", ">=", d]] }).catch(() => []),
+      Data.api().list("Employee Checkin", { fields: ["*"], filters: [["time", ">=", d + " 00:00:00"], ["time", "<=", d + " 23:59:59"]], order_by: "time asc" }),
+      Data.api().list("Leave Application", { fields: ["employee", "leave_type"], filters: [["status", "=", "Approved"], ["docstatus", "=", 1], ["from_date", "<=", d], ["to_date", ">=", d]] }).catch(() => []),
     ]);
     const by = {};
     logs.filter(valid).forEach((l) => (by[l.employee] = by[l.employee] || []).push(l));
@@ -188,15 +197,16 @@ window.Views = window.Views || {};
     const t = await myToday();
     if (!t) { view.innerHTML = `${pageHead("البصمة")}<div class="empty">حسابك مش مربوط بموظف على ERPNext.</div>`; return; }
     const { emp, shifts, logs, types } = t;
-    const [locs, enrollment] = await Promise.all([Data.locations(), CONFIG.REQUIRE_FACE ? Face.loadEnrollment(emp.name) : null]);
+    const [locs, enrollment, myBranches] = await Promise.all([Data.locations(), CONFIG.REQUIRE_FACE ? Face.loadEnrollment(emp.name) : null, Data.branches(emp.name)]);
     let enrolled = enrollment;
     const last = logs[logs.length - 1];
     const assigned = shifts.map((s) => s.shift.name);
     const st = { log: last && last.log_type === "IN" ? "OUT" : "IN", shift: assigned[0] || Object.keys(types)[0] || "", pos: null };
 
+    // الفروع المسموحة: جدول الفروع في ملف الموظف، + فرع تعيين الشيفت لو محدد
     const allowedLocs = () => {
-      const names = shifts.filter((s) => s.shift.name === st.shift && s.location).map((s) => s.location);
-      const pool = names.length ? names : shifts.map((s) => s.location).filter(Boolean);
+      const fromAsg = shifts.filter((s) => s.shift.name === st.shift && s.location).map((s) => s.location);
+      const pool = [...myBranches, ...fromAsg];
       return [...new Set(pool)].map((n) => locs.find((l) => l.name === n)).filter(Boolean);
     };
 
@@ -212,7 +222,7 @@ window.Views = window.Views || {};
       <div id="cam"></div>
       <div id="act" style="margin-top:14px"><button class="btn primary block lg" id="go">${icon("finger")} ابدأ البصمة</button></div>
       <h2 class="sec">بصماتك النهارده</h2>
-      ${logs.length ? `<div class="group">${logs.map((l) => `<div class="row-item"><span class="ri-ic ${l.log_type === "IN" ? "in" : "out"}">${icon(l.log_type === "IN" ? "login" : "logout")}</span><span class="ri-main"><span class="ri-t">${l.log_type === "IN" ? "حضور" : "انصراف"}</span>${String(l.device_id || "").startsWith("app-pending") ? '<span class="ri-s">مستنية موافقة</span>' : ""}</span><span class="ri-end ri-big">${UI.hm(l.time)}</span></div>`).join("")}</div>` : '<div class="empty">لسه مفيش بصمات النهارده</div>'}`;
+      ${t.all.length ? `<div class="group">${t.all.map((l) => `<div class="row-item"><span class="ri-ic ${l.log_type === "IN" ? "in" : "out"}">${icon(l.log_type === "IN" ? "login" : "logout")}</span><span class="ri-main"><span class="ri-t">${l.log_type === "IN" ? "حضور" : "انصراف"}</span>${isPending(l) ? `<span class="ri-s">${esc(reasonOf(l))}، مستنية موافقة المدير</span>` : !valid(l) ? '<span class="ri-s" style="color:var(--out)">المدير رفضها</span>' : ""}</span><span class="ri-end ri-big">${UI.hm(l.time)}</span></div>`).join("")}</div>` : '<div class="empty">لسه مفيش بصمات النهارده</div>'}`;
 
     const setChoice = () => view.querySelectorAll(".choice button").forEach((b) => b.classList.toggle("on", b.dataset.t === st.log));
     view.querySelectorAll(".choice button").forEach((b) => b.onclick = () => { st.log = b.dataset.t; setChoice(); });
@@ -276,7 +286,7 @@ window.Views = window.Views || {};
               if (r.ok) {
                 enrolled = true;
                 step("#s-face", "ok", "اتسجلت بصمة وشك");
-                Notify.send(await Data.hrUsers(), `${emp.employee_name} سجّل بصمة وشه لأول مرة`, "Employee", emp.name);
+                Notify.send(await Data.adminUsers(), `${emp.employee_name} سجّل بصمة وشه لأول مرة`, "Employee", emp.name);
                 return done();
               }
               fail(r.reason);
@@ -306,19 +316,14 @@ window.Views = window.Views || {};
         await API.insert("Employee Checkin", ck);
         return result("ok", `اتسجل ${what}ك`, `الساعة ${UI.hm(now)}`);
       }
-      if (need.type === "shift") {
-        const hr = await Data.hrUsers();
-        const approver = emp.shift_request_approver || (await Data.managerUser(emp)) || hr[0];
-        const sr = await API.insert("Shift Request", { employee: emp.name, company: emp.company, shift_type: st.shift, from_date: UI.today(), to_date: UI.today(), approver, status: "Draft" });
-        await API.insert("Employee Checkin", { ...ck, device_id: `app-pending:SR:${sr.name}` });
-        await Notify.send(approver, `${emp.employee_name} بصم ${what} في ${st.shift} ومحتاج موافقتك`, "Shift Request", sr.name);
-        return result("warn", "اتبعت طلب تغيير الشيفت", `${what} الساعة ${UI.hm(now)} في ${esc(st.shift)}. هيوصلك إشعار لما المدير يرد.`);
-      }
-      const label = `${UI.REQ_TYPE[need.type]} ${UI.mins(need.minutes)}`;
-      const ar = await API.insert("Attendance Request", { employee: emp.name, company: emp.company, from_date: UI.today(), to_date: UI.today(), reason: "On Duty", explanation: `${label} — ${what} الساعة ${UI.hm(now)} — ${st.shift}` });
-      await API.insert("Employee Checkin", { ...ck, device_id: `app-pending:AR:${ar.name}` });
-      await Notify.send([await Data.managerUser(emp), ...(await Data.hrUsers())], `${emp.employee_name}: ${label} ومحتاج موافقتك`, "Attendance Request", ar.name);
-      result("warn", "البصمة اتبعتت للمدير", `${esc(label)}. البصمة اتسجلت وهتتحسب لما المدير يوافق، وهيوصلك إشعار بالرد.`);
+      // بصمة محتاجة موافقة: بتتسجل Employee Checkin حالتها Pending في الـ Workflow، ومش بتدخل الحضور التلقائي لحد ما المدير يوافق
+      if (!(await Data.workflowReady())) throw new Error("البصمة دي محتاجة موافقة المدير، بس الـ Workflow بتاع البصمة لسه مش متجهز على ERPNext. كلّم مدير النظام يجهزه من المزيد ← تجهيز ERPNext.");
+      const tag = need.type === "shift" ? `app:shift:${st.shift}` : `app:${need.type}:${need.minutes}`;
+      const doc = await API.insert("Employee Checkin", { ...ck, device_id: tag, workflow_state: "Pending", skip_auto_attendance: 1 });
+      const label = reasonOf(doc.device_id ? doc : { device_id: tag });
+      const manager = await Data.managerUser(emp);
+      await Notify.send(manager || (await Data.adminUsers()), `${emp.employee_name}: ${label}، ${what} الساعة ${UI.hm(now)}، ومحتاج موافقتك`, "Employee Checkin", doc.name);
+      result("warn", "البصمة مستنية موافقة مديرك", `${esc(label)}. البصمة اتسجلت وهتتحسب أول ما ${manager ? "مديرك المباشر" : "مدير النظام"} يوافق، وهيوصلك إشعار بالرد.`);
     }
 
     view.querySelector("#go").onclick = async () => {

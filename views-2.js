@@ -6,8 +6,11 @@
   const range = (a, b) => (a === b ? dshort(a) : `${dshort(a)} ← ${dshort(b)}`);
   const comment = (dt, name, content) => API.insert("Comment", { comment_type: "Comment", reference_doctype: dt, reference_name: name, content }).catch(() => {});
   const userOf = async (emp) => { const e = await Data.employee(emp).catch(() => null); return e && e.user_id; };
-  // تعديل علامة البصمة (مستنية/مقبولة/مرفوضة) — لو اليوزر مالوش صلاحية كتابة على Employee Checkin بنستخدم مفتاح الأدمن
-  const tagCheckin = (name, device_id) => API.update("Employee Checkin", name, { device_id }).catch(() => API.admin.update("Employee Checkin", name, { device_id }));
+  // بنجرّب بصلاحيات اليوزر الأول، ولو ERPNext رفض (المدير مالوش صلاحية كتابة) بنكمّل بمفتاح الأدمن
+  // (الواجهة متأكدة قبلها إن الموظف ده في فريقه المباشر)
+  const asUserOrAdmin = (fn) => fn(API).catch((e) => ([401, 403, 417].includes(e.status) ? fn(API.admin) : Promise.reject(e)));
+  const applyWorkflow = (name, action) => asUserOrAdmin((A) => A.call("frappe.model.workflow.apply_workflow", { doc: JSON.stringify({ doctype: "Employee Checkin", name }), action }));
+  const tagCheckin = (name, device_id) => asUserOrAdmin((A) => A.update("Employee Checkin", name, { device_id }));
   async function filesOf(dt, name) {
     const f = await API.attachments(dt, name);
     const urls = await Promise.all(f.map((x) => API.fileBlobUrl(x.file_url).catch(() => null)));
@@ -25,14 +28,10 @@
       if (tab === "done") return history(list);
       const p = await pendingRequests();
       const segN = (k, n) => { const b = view.querySelector(`.seg [data-k="${k}"]`); if (n) b.insertAdjacentHTML("beforeend", ` <span class="n">${UI.num(n)}</span>`); };
-      segN("punch", p.att.length + p.shift.length); segN("leave", p.leave.length);
+      segN("punch", p.att.length); segN("leave", p.leave.length);
       let html = "";
       if (tab === "punch") {
-        const reqs = await Promise.all(p.att.map((c) => API.get("Attendance Request", c.request).catch(() => null)));
-        html = [
-          ...p.att.map((c, i) => card(`att:${c.name}`, c.employee_name, `<span class="tag warn">${esc(String((reqs[i] && reqs[i].explanation) || "").split("—")[0] || "بصمة محتاجة موافقة")}</span>`, `${c.log_type === "IN" ? "حضور" : "انصراف"} الساعة ${UI.hm(c.time)}، ${dshort(String(c.time).slice(0, 10))}`)),
-          ...p.shift.map((r) => card(`shift:${r.name}`, r.employee_name, `<span class="tag info">بصمة في شيفت تاني</span>`, `${esc(r.shift_type)}، ${range(r.from_date, r.to_date)}`)),
-        ].join("");
+        html = p.att.map((c) => card(`att:${c.name}`, c.employee_name, `<span class="tag warn">${esc(reasonOf(c))}</span>`, `${c.log_type === "IN" ? "حضور" : "انصراف"} الساعة ${UI.hm(c.time)}، ${dshort(String(c.time).slice(0, 10))}`)).join("");
       } else {
         html = p.leave.map((r) => card(`leave:${r.name}`, r.employee_name, `<span class="tag info">${esc(r.leave_type)}</span>`, `${range(r.from_date, r.to_date)}، ${UI.num(r.total_leave_days || 1)} يوم${r.description ? "، " + esc(r.description) : ""}`)).join("");
       }
@@ -41,7 +40,6 @@
         const [kind, name] = b.closest("[data-id]").dataset.id.split(":");
         const ok = b.dataset.a === "ok";
         if (kind === "att") decideAtt(p.att.find((x) => x.name === name), ok, draw);
-        if (kind === "shift") decideShift(p.shift.find((x) => x.name === name), ok, draw);
         if (kind === "leave") decideLeave(p.leave.find((x) => x.name === name), ok, draw);
       });
     };
@@ -50,15 +48,16 @@
   };
 
   async function history(list) {
-    const [lv, sr, ar] = await Promise.all([
-      Session.isLeaveApprover ? API.list("Leave Application", { fields: ["name", "employee_name", "leave_type", "from_date", "to_date", "status", "modified"], filters: [["status", "in", ["Approved", "Rejected"]]], order_by: "modified desc", limit: 20 }).catch(() => []) : [],
-      Session.isShiftApprover ? API.list("Shift Request", { fields: ["name", "employee_name", "shift_type", "from_date", "status", "modified"], filters: [["status", "in", ["Approved", "Rejected"]]], order_by: "modified desc", limit: 20 }).catch(() => []) : [],
-      Session.isHR ? API.list("Employee Checkin", { fields: ["name", "employee_name", "log_type", "time", "device_id", "modified"], filters: [["device_id", "like", "app-%:AR:%"]], order_by: "modified desc", limit: 20 }).catch(() => []) : [],
+    const team = (await Data.team()).map((e) => e.name);
+    if (!team.length) { list.innerHTML = '<div class="empty">لسه مفيش</div>'; return; }
+    const A = Data.api();
+    const [lv, ck] = await Promise.all([
+      A.list("Leave Application", { fields: ["name", "employee_name", "leave_type", "from_date", "to_date", "status", "modified"], filters: [["status", "in", ["Approved", "Rejected"]], ["employee", "in", team]], order_by: "modified desc", limit: 20 }).catch(() => []),
+      A.list("Employee Checkin", { fields: ["*"], filters: [["workflow_state", "in", ["Approved", "Rejected"]], ["device_id", "like", "app:%"], ["employee", "in", team]], order_by: "modified desc", limit: 20 }).catch(() => []),
     ]);
     const rows = [
       ...lv.map((r) => ({ at: r.modified, who: r.employee_name, what: `${r.leave_type}، ${range(r.from_date, r.to_date)}`, st: r.status })),
-      ...sr.map((r) => ({ at: r.modified, who: r.employee_name, what: `شيفت ${r.shift_type}، ${dshort(r.from_date)}`, st: r.status })),
-      ...ar.filter((c) => !c.device_id.startsWith("app-pending")).map((c) => ({ at: c.modified, who: c.employee_name, what: `${c.log_type === "IN" ? "حضور" : "انصراف"} ${UI.hm(c.time)}، ${dshort(String(c.time).slice(0, 10))}`, st: c.device_id.startsWith("app-rejected") ? "Rejected" : "Approved" })),
+      ...ck.map((c) => ({ at: c.modified, who: c.employee_name, what: `${reasonOf(c)}، ${UI.hm(c.time)} ${dshort(String(c.time).slice(0, 10))}`, st: c.workflow_state })),
     ].sort((a, b) => (a.at < b.at ? 1 : -1));
     list.innerHTML = rows.length ? `<div class="group">${rows.map((r) => `<div class="row-item"><span class="ri-main"><span class="ri-t">${esc(r.who)}</span><span class="ri-s">${esc(r.what)}</span></span><span class="ri-end">${UI.statusTag(r.st)}</span></div>`).join("")}</div>` : '<div class="empty">لسه مفيش</div>';
   }
@@ -74,33 +73,28 @@
     });
   }
 
+  // موافقة أو رفض البصمة عن طريق الـ Workflow بتاع Employee Checkin
   async function decideAtt(c, ok, done) {
-    const v = await decideSheet(ok ? "موافقة على البصمة" : "رفض البصمة", ok, `<p style="margin-top:0">${esc(c.employee_name)}: ${c.log_type === "IN" ? "حضور" : "انصراف"} الساعة ${UI.hm(c.time)}</p>`);
+    const v = await decideSheet(ok ? "موافقة على البصمة" : "رفض البصمة", ok, `<p style="margin-top:0">${esc(c.employee_name)}: ${esc(reasonOf(c))}، ${c.log_type === "IN" ? "حضور" : "انصراف"} الساعة ${UI.hm(c.time)}</p>`);
     if (!v) return;
     try {
-      if (ok) {
-        await tagCheckin(c.name, `app-approved:AR:${c.request}`);
-        try { await API.submit("Attendance Request", c.request); } catch (e) { await comment("Attendance Request", c.request, `اتوافق عليه من الواجهة${v.note ? ": " + v.note : ""}`); }
+      if (String(c.device_id || "").startsWith("app-pending")) {
+        await tagCheckin(c.name, ok ? "app-approved" : "app-rejected"); // بصمات النسخة القديمة
       } else {
-        await tagCheckin(c.name, `app-rejected:AR:${c.request}`);
-        await comment("Attendance Request", c.request, `مرفوض${v.note ? ": " + v.note : ""}`);
+        await applyWorkflow(c.name, ok ? "Approve" : "Reject");
+        if (ok) await asUserOrAdmin((A) => A.update("Employee Checkin", c.name, { skip_auto_attendance: 0 }));
+        // بصمة في شيفت تاني: بنعيّنه على الشيفت ده اليوم ده بس عشان الحضور يتحسب صح
+        const [, kind] = String(c.device_id).split(":");
+        if (ok && kind === "shift") {
+          const shift = String(c.device_id).split(":").slice(2).join(":"), day = String(c.time).slice(0, 10);
+          const emp = await Data.employee(c.employee);
+          await API.admin.insertSubmit("Shift Assignment", { employee: c.employee, company: emp && emp.company, shift_type: shift, start_date: day, end_date: day, status: "Active" })
+            .catch((e) => toast(`البصمة اتقبلت، بس تعيين الشيفت ليوم ${day} ما اتعملش: ${e.message}`, "bad"));
+        }
       }
-      await Notify.send(await userOf(c.employee), `بصمة ${c.log_type === "IN" ? "الحضور" : "الانصراف"} الساعة ${UI.hm(c.time)} ${ok ? "اتقبلت ✓" : "اترفضت ✗"}${v.note ? " — " + v.note : ""}`, "Attendance Request", c.request);
+      if (v.note) await comment("Employee Checkin", c.name, v.note);
+      await Notify.send(await userOf(c.employee), `بصمة ${c.log_type === "IN" ? "الحضور" : "الانصراف"} الساعة ${UI.hm(c.time)} ${ok ? "اتقبلت ✓" : "اترفضت ✗"}${v.note ? " — " + v.note : ""}`, "Employee Checkin", c.name);
       toast(ok ? "اتوافق عليها" : "اترفضت", "ok"); done();
-    } catch (e) { toast(e.message, "bad"); }
-  }
-
-  async function decideShift(r, ok, done) {
-    const v = await decideSheet(ok ? "موافقة على الشيفت" : "رفض الشيفت", ok, `<p style="margin-top:0">${esc(r.employee_name)}: ${esc(r.shift_type)} يوم ${dshort(r.from_date)}</p>`);
-    if (!v) return;
-    try {
-      await API.update("Shift Request", r.name, { status: ok ? "Approved" : "Rejected" });
-      await API.submit("Shift Request", r.name);
-      const cks = await API.list("Employee Checkin", { fields: ["name"], filters: [["device_id", "=", `app-pending:SR:${r.name}`]] }).catch(() => []);
-      await Promise.all(cks.map((c) => tagCheckin(c.name, `app-${ok ? "approved" : "rejected"}:SR:${r.name}`)));
-      if (v.note) await comment("Shift Request", r.name, v.note);
-      await Notify.send(await userOf(r.employee), `طلب شيفت ${r.shift_type} يوم ${r.from_date} ${ok ? "اتقبل ✓" : "اترفض ✗"}${v.note ? " — " + v.note : ""}`, "Shift Request", r.name);
-      toast(ok ? "اتوافق عليه" : "اترفض", "ok"); done();
     } catch (e) { toast(e.message, "bad"); }
   }
 
@@ -118,8 +112,8 @@
       const note = s.el.querySelector("#note").value.trim();
       const lt = s.el.querySelector("#lt") ? s.el.querySelector("#lt").value : r.leave_type;
       try {
-        await API.update("Leave Application", r.name, { status: ok ? "Approved" : "Rejected", leave_type: lt });
-        await API.submit("Leave Application", r.name);
+        await asUserOrAdmin((A) => A.update("Leave Application", r.name, { status: ok ? "Approved" : "Rejected", leave_type: lt }));
+        await asUserOrAdmin((A) => A.submit("Leave Application", r.name));
         if (note) await comment("Leave Application", r.name, note);
         await Notify.send(await userOf(r.employee), `طلب ${lt} من ${r.from_date} ${ok ? "اتقبل ✓" : "اترفض ✗"}${note ? " — " + note : ""}`, "Leave Application", r.name);
         toast(ok ? "الإجازة اتقبلت" : "الإجازة اترفضت", "ok"); s.close(); done();
@@ -131,17 +125,15 @@
   Views.mine = async function (view) {
     const me = Session.employee;
     if (!me) { view.innerHTML = `${pageHead("طلباتي")}<div class="empty">حسابك مش مربوط بموظف على ERPNext.</div>`; return; }
-    const [types, lv, sr, cks] = await Promise.all([
+    const [types, lv, cks] = await Promise.all([
       Data.leaveTypes(),
       API.list("Leave Application", { fields: ["name", "leave_type", "from_date", "to_date", "total_leave_days", "status", "description"], filters: [["employee", "=", me.name]], order_by: "creation desc", limit: 20 }).catch(() => []),
-      API.list("Shift Request", { fields: ["name", "shift_type", "from_date", "status"], filters: [["employee", "=", me.name]], order_by: "creation desc", limit: 10 }).catch(() => []),
-      API.list("Employee Checkin", { fields: ["name", "log_type", "time", "device_id"], filters: [["employee", "=", me.name], ["device_id", "like", "app-%:AR:%"]], order_by: "time desc", limit: 10 }).catch(() => []),
+      API.list("Employee Checkin", { fields: ["*"], filters: [["employee", "=", me.name], ["device_id", "like", "app:%"]], order_by: "time desc", limit: 15 }).catch(() => []),
     ]);
     const t = UI.today();
     const items = [
       ...lv.map((r) => ({ ic: "cal", t: r.leave_type, s: `${range(r.from_date, r.to_date)}، ${UI.num(r.total_leave_days || 1)} يوم`, st: r.status })),
-      ...sr.map((r) => ({ ic: "swap", t: `شيفت ${r.shift_type}`, s: dshort(r.from_date), st: r.status === "Draft" ? "Pending" : r.status })),
-      ...cks.map((c) => ({ ic: "finger", t: `بصمة ${c.log_type === "IN" ? "حضور" : "انصراف"} ${UI.hm(c.time)}`, s: dshort(String(c.time).slice(0, 10)), st: c.device_id.startsWith("app-pending") ? "Pending" : c.device_id.startsWith("app-rejected") ? "Rejected" : "Approved" })),
+      ...cks.filter((c) => c.workflow_state).map((c) => ({ ic: "finger", t: reasonOf(c), s: `${c.log_type === "IN" ? "حضور" : "انصراف"} ${UI.hm(c.time)}، ${dshort(String(c.time).slice(0, 10))}`, st: c.workflow_state })),
     ];
     view.innerHTML = `${pageHead("طلباتي")}
       <form class="form" id="lf">
@@ -171,7 +163,7 @@
   Views.tasks = async function (view) {
     let tab = "open";
     const team = await Data.team().catch(() => []);
-    const canAssign = Session.isHR || team.length > 0;
+    const canAssign = team.length > 0;
     const draw = async () => {
       const f = tab === "open" ? [["allocated_to", "=", Session.user], ["status", "=", "Open"]] : tab === "done" ? [["allocated_to", "=", Session.user], ["status", "=", "Closed"]] : [["assigned_by", "=", Session.user], ["allocated_to", "!=", Session.user], ["status", "!=", "Cancelled"]];
       const rows = await API.list("ToDo", { fields: ["name", "description", "status", "date", "allocated_to", "assigned_by", "priority"], filters: f, order_by: "creation desc", limit: 50 }).catch(() => []);
@@ -234,16 +226,19 @@
   Views.rewards = async function (view) {
     const C = CONFIG.COMPONENTS;
     const me = Session.employee;
-    const recent = await API.list("Additional Salary", {
+    const team = await Data.team();
+    const canGive = Session.canReward && team.length > 0;
+    // الأدمن: الكل. المدير: فريقه المباشر. غير كده: نفسه بس
+    const scope = Session.isAdmin ? [] : [["employee", "in", [...(canGive ? team.map((e) => e.name) : []), me ? me.name : "-"]]];
+    const recent = await (canGive ? Data.api() : API).list("Additional Salary", {
       fields: ["name", "employee", "employee_name", "salary_component", "amount", "payroll_date", "docstatus"],
-      filters: [["salary_component", "in", [C.reward, C.deduction]], ["docstatus", "!=", 2], ...(Session.canReward ? [] : [["employee", "=", me ? me.name : "-"]])],
+      filters: [["salary_component", "in", [C.reward, C.deduction]], ["docstatus", "!=", 2], ...scope],
       order_by: "creation desc", limit: 30,
     }).catch(() => []);
     const list = recent.length ? `<div class="group">${recent.map((x) => `<div class="row-item" data-n="${esc(x.name)}"><span class="ri-ic ${x.salary_component === C.reward ? "in" : "out"}">${icon(x.salary_component === C.reward ? "gift" : "coins")}</span><span class="ri-main"><span class="ri-t">${esc(x.employee_name)}</span><span class="ri-s">${esc(x.salary_component)}، ${dshort(x.payroll_date)}</span><span class="th"></span></span><span class="ri-end ri-big ${x.salary_component === C.reward ? "pos" : "neg"}">${UI.money(x.amount)}</span></div>`).join("")}</div>` : '<div class="empty">لسه مفيش</div>';
     const loadThumbs = () => view.querySelectorAll("[data-n]").forEach(async (el) => { el.querySelector(".th").innerHTML = await filesOf("Additional Salary", el.dataset.n); el.querySelectorAll(".thumbs img").forEach((i) => i.onclick = () => UI.viewImage(i.src)); });
-    if (!Session.canReward) { view.innerHTML = `${pageHead("مكافآتي وخصوماتي")}${list}`; loadThumbs(); return; }
+    if (!canGive) { view.innerHTML = `${pageHead("مكافآتي وخصوماتي")}${list}`; loadThumbs(); return; }
 
-    const team = await Data.team();
     const st = { comp: C.reward, calc: "Fixed", ov: {}, base: {} };
     view.innerHTML = `${pageHead("المكافآت والخصومات", "بتتسجل Additional Salary وتدخل المرتب")}
       <div class="form">
@@ -287,8 +282,8 @@
       for (const id of sel()) {
         const e = team.find((x) => x.name === id), amount = amountOf(id);
         try {
-          const d = await API.insert("Additional Salary", { employee: id, company: e.company, salary_component: st.comp, amount, payroll_date: date, overwrite_salary_structure_amount: 0, docstatus: 1 });
-          for (const f of files) await API.upload(f, { doctype: "Additional Salary", docname: d.name });
+          const d = await asUserOrAdmin((A) => A.insert("Additional Salary", { employee: id, company: e.company, salary_component: st.comp, amount, payroll_date: date, overwrite_salary_structure_amount: 0, docstatus: 1 }));
+          for (const f of files) await asUserOrAdmin((A) => A.upload(f, { doctype: "Additional Salary", docname: d.name }));
           if (reason) await comment("Additional Salary", d.name, reason);
           await Notify.send(e.user_id, `${st.comp === C.reward ? "اتضافلك مكافأة" : "اتسجل عليك خصم"} ${UI.money(amount)}${reason ? " — " + reason : ""}`, "Additional Salary", d.name);
           n++;

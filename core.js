@@ -9,12 +9,15 @@
     save() { const { user, full_name, roles, employee } = this; try { localStorage.setItem("hr_session", JSON.stringify({ user, full_name, roles, employee })); } catch (e) {} },
     clear() { this.user = null; this.employee = null; this.roles = []; API.logout(); try { localStorage.removeItem("hr_session"); } catch (e) {} },
     has(r) { return this.roles.includes(r); },
-    get isAdmin() { return this.has("System Manager") || this.has("HR Manager"); },
-    get isHR() { return this.isAdmin || this.has("HR User"); },
-    get isLeaveApprover() { return this.isHR || this.has("Leave Approver"); },
-    get isShiftApprover() { return this.isHR || this.has("Shift Approver"); },
-    get canApprove() { return this.isHR || this.has("Leave Approver") || this.has("Shift Approver"); },
-    get canReward() { return this.isHR; },
+    // System Manager: بيشوف كل حاجة ومعاها الإعدادات
+    get isAdmin() { return this.has("System Manager"); },
+    get isHR() { return this.isAdmin; },
+    // HR Manager: بيشوف ويوافق على الناس اللي هو مديرهم المباشر بس
+    get isManager() { return this.has("HR Manager"); },
+    get canApprove() { return this.isAdmin || this.isManager; },
+    get isLeaveApprover() { return this.canApprove; },
+    get isShiftApprover() { return this.canApprove; },
+    get canReward() { return this.isAdmin || this.isManager; },
   };
   window.Session = Session;
 
@@ -31,11 +34,23 @@
     employees: () => once("employees", () => API.list("Employee", { fields: ["*"], filters: [["status", "=", "Active"]], order_by: "employee_name asc" })),
     async employee(name) { return (await this.employees()).find((e) => e.name === name); },
     // الموظفين اللي المستخدم مسؤول عنهم
+    // System Manager: كل الموظفين. HR Manager: اللي هو مديرهم المباشر بس. غير كده: مفيش.
     async team() {
+      if (!Session.canApprove) return [];
       const all = await this.employees().catch(() => []);
-      if (Session.isHR) return all;
+      if (Session.isAdmin) return all;
       const me = Session.employee && Session.employee.name;
-      return all.filter((e) => e.name !== me && (e.reports_to === me || e.leave_approver === Session.user || e.shift_request_approver === Session.user));
+      return me ? all.filter((e) => e.reports_to === me) : [];
+    },
+    // قراءة بيانات الفريق: المدير ممكن ميكونش عنده صلاحية قراءة على ERPNext لبيانات فريقه،
+    // فبنقرأ بمفتاح الأدمن ونفلتر على فريقه بس
+    api() { return Session.canApprove ? API.admin : API; },
+    // هل الـ Workflow بتاع البصمة متجهز؟
+    workflowReady: () => once("wf", async () => (await API.admin.list("Workflow", { fields: ["name"], filters: [["document_type", "=", "Employee Checkin"], ["is_active", "=", 1]], limit: 1 }).catch(() => [])).length > 0),
+    // الفروع المسموحة للموظف (من جدول الفروع في ملفه)
+    async branches(employee) {
+      const doc = await API.get("Employee", employee).catch(() => null);
+      return doc && Array.isArray(doc.custom_branches) ? doc.custom_branches.map((r) => r.shift_location).filter(Boolean) : [];
     },
     // تعيينات الشيفت الفعّالة في فترة
     async assignments(from, to, employee) {
@@ -50,9 +65,10 @@
       if (mine.length) return mine.map((a) => ({ shift: types[a.shift_type], location: a.shift_location, assignment: a.name })).filter((x) => x.shift);
       return emp.default_shift && types[emp.default_shift] ? [{ shift: types[emp.default_shift], location: null }] : [];
     },
-    async hrUsers() {
-      return once("hrUsers", async () => (await API.admin.list("User", { fields: ["name"], filters: [["enabled", "=", 1], ["Has Role", "role", "in", ["HR User", "HR Manager"]]] }).catch(() => [])).map((u) => u.name));
+    async adminUsers() {
+      return once("adminUsers", async () => (await API.admin.list("User", { fields: ["name"], filters: [["enabled", "=", 1], ["Has Role", "role", "=", "System Manager"], ["name", "not in", ["Administrator", "Guest"]]] }).catch(() => [])).map((u) => u.name));
     },
+    hrUsers() { return this.adminUsers(); },
     async managerUser(emp) {
       if (!emp.reports_to) return null;
       const m = await this.employee(emp.reports_to);
@@ -79,7 +95,7 @@
       document.querySelectorAll("[data-bell] .dot").forEach((d) => { d.textContent = n > 9 ? "9+" : n; d.hidden = !n; });
     },
     route(dt) {
-      return { "Attendance Request": "#/inbox", "Shift Request": "#/inbox", "Leave Application": Session.canApprove ? "#/inbox" : "#/mine", ToDo: "#/tasks", "Additional Salary": "#/rewards" }[dt] || "#/home";
+      return { "Employee Checkin": Session.canApprove ? "#/inbox" : "#/mine", "Attendance Request": "#/inbox", "Shift Request": "#/inbox", "Leave Application": Session.canApprove ? "#/inbox" : "#/mine", ToDo: "#/tasks", "Additional Salary": "#/rewards" }[dt] || "#/home";
     },
     async open() {
       const s = UI.sheet({ title: "الإشعارات", body: loadingHTML, footer: `<button class="btn ghost" data-all>تعليم الكل كمقروء</button>` });

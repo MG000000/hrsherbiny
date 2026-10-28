@@ -1,6 +1,6 @@
 // بيانات تجريبية بنفس مستندات ERPNext و HRMS الأصلية (للتجربة من غير سيرفر)
 (function () {
-  const KEY = "hr_mock_v2";
+  const KEY = "hr_mock_v3";
   const pad = (n) => String(n).padStart(2, "0");
   const D = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const DT = (d) => `${D(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
@@ -18,8 +18,8 @@
       return d;
     };
     db.__users = {
-      "admin@demo.com": ["أحمد سمير", ["System Manager", "HR Manager", "HR User", "Employee"]],
-      "mona@demo.com": ["منى عادل", ["HR User", "Leave Approver", "Shift Approver", "Employee"]],
+      "admin@demo.com": ["أحمد سمير", ["System Manager", "HR Manager", "Employee"]],
+      "mona@demo.com": ["منى عادل", ["HR Manager", "Employee"]],
       "karim@demo.com": ["كريم حسن", ["Employee"]],
       "sara@demo.com": ["سارة محمود", ["Employee"]],
       "youssef@demo.com": ["يوسف علي", ["Employee"]],
@@ -49,9 +49,10 @@
     const now = new Date();
     const mStart = D(new Date(now.getFullYear(), now.getMonth(), 1));
     emps.forEach(([name, full, user, des, base, shift, locs, rep]) => {
-      add("Employee", { name, employee_name: full, user_id: user, designation: des, status: "Active", company: "شركة تجريبية", default_shift: shift, reports_to: rep, leave_approver: rep ? "mona@demo.com" : null, shift_request_approver: rep ? "mona@demo.com" : null, image: null, department: "الإدارة" });
+      const repUser = rep ? emps.find((x) => x[0] === rep)[2] : null;
+      add("Employee", { name, employee_name: full, user_id: user, designation: des, status: "Active", company: "شركة تجريبية", default_shift: shift, reports_to: rep, leave_approver: repUser, image: null, department: "الإدارة", custom_branches: locs.map((l) => ({ shift_location: l })) });
       add("Salary Structure Assignment", { employee: name, base, from_date: `${now.getFullYear()}-01-01`, docstatus: 1 });
-      locs.forEach((l) => add("Shift Assignment", { employee: name, employee_name: full, shift_type: shift, shift_location: l, start_date: mStart, end_date: null, status: "Active", docstatus: 1, company: "شركة تجريبية" }));
+      add("Shift Assignment", { employee: name, employee_name: full, shift_type: shift, shift_location: null, start_date: mStart, end_date: null, status: "Active", docstatus: 1, company: "شركة تجريبية" });
     });
 
     const r = rng(now.getFullYear() * 100 + now.getMonth() + 3);
@@ -66,11 +67,11 @@
         const t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), st, 0);
         t.setMinutes((roll < 0.25 ? Math.floor(r() * 40) : Math.floor(r() * 12) - 9) + (i === 3 ? 8 : 0));
         if (today && (i === 2 || i === 5 || t > now)) return;
-        add("Employee Checkin", { employee: name, employee_name: full, log_type: "IN", time: DT(t), device_id: "app", latitude: 29.96, longitude: 31.25 });
+        add("Employee Checkin", { employee: name, employee_name: full, log_type: "IN", time: DT(t), device_id: "app", workflow_state: "Approved", latitude: 29.96, longitude: 31.25 });
         if (today || r() < 0.05) return;
         const o = new Date(d.getFullYear(), d.getMonth(), d.getDate(), st + 8, 0);
         o.setMinutes(r() < 0.3 ? Math.floor(r() * 110) : Math.floor(r() * 14) - 9);
-        add("Employee Checkin", { employee: name, employee_name: full, log_type: "OUT", time: DT(o), device_id: "app", latitude: 29.96, longitude: 31.25 });
+        add("Employee Checkin", { employee: name, employee_name: full, log_type: "OUT", time: DT(o), device_id: "app", workflow_state: "Approved", latitude: 29.96, longitude: 31.25 });
       });
     }
     const y = now.getFullYear(), m = pad(now.getMonth() + 1);
@@ -79,15 +80,15 @@
     add("Leave Application", { employee: "EMP-0004", employee_name: "سارة محمود", leave_type: "إجازة سنوية", from_date: D(fut), to_date: D(fut), total_leave_days: 1, status: "Open", leave_approver: "mona@demo.com", description: "سفر" });
 
     const lt = new Date(now); lt.setHours(9, 37, 0, 0);
-    const ar = add("Attendance Request", { employee: "EMP-0003", employee_name: "كريم حسن", from_date: D(now), to_date: D(now), reason: "On Duty", explanation: "حضور متأخر ٣٧ د — حضور الساعة 09:37 — إداري بدون أوفر", company: "شركة تجريبية" });
-    add("Employee Checkin", { employee: "EMP-0003", employee_name: "كريم حسن", log_type: "IN", time: DT(lt), device_id: `app-pending:AR:${ar.name}` });
+    add("Workflow", { name: "موافقة البصمة", document_type: "Employee Checkin", is_active: 1 });
+    const ar = add("Employee Checkin", { employee: "EMP-0003", employee_name: "كريم حسن", log_type: "IN", time: DT(lt), device_id: "app:late:37", workflow_state: "Pending", skip_auto_attendance: 1 });
 
     add("Additional Salary", { employee: "EMP-0004", employee_name: "سارة محمود", salary_component: C().reward, type: "Earning", amount: 500, payroll_date: `${y}-${m}-05`, docstatus: 1, company: "شركة تجريبية", custom_reason: "" });
     add("Additional Salary", { employee: "EMP-0007", employee_name: "عمر خالد", salary_component: C().deduction, type: "Deduction", amount: 110, payroll_date: `${y}-${m}-08`, docstatus: 1, company: "شركة تجريبية" });
 
     add("ToDo", { allocated_to: "sara@demo.com", description: "مراجعة شكاوى العملاء الأسبوع ده", status: "Open", date: D(fut), assigned_by: "mona@demo.com", priority: "Medium" });
     add("ToDo", { allocated_to: "karim@demo.com", description: "تسليم كشف المصروفات", status: "Closed", date: D(now), assigned_by: "mona@demo.com", priority: "High" });
-    add("Notification Log", { for_user: "mona@demo.com", subject: "كريم حسن: حضور متأخر 37 دقيقة محتاج موافقتك", document_type: "Attendance Request", document_name: ar.name, read: 0 });
+    add("Notification Log", { for_user: "mona@demo.com", subject: "كريم حسن: حضور متأخر 37 دقيقة محتاج موافقتك", document_type: "Employee Checkin", document_name: ar.name, read: 0 });
     return db;
   }
 
@@ -160,6 +161,7 @@
       if (e) d.employee_name = e.employee_name;
       if (dt === "Leave Application") { d.total_leave_days = Math.round((new Date(d.to_date) - new Date(d.from_date)) / 864e5) + 1; d.status = d.status || "Open"; }
       if (dt === "Shift Request") d.status = d.status || "Draft";
+      if (dt === "Employee Checkin") d.workflow_state = d.workflow_state || "Approved";
       if (dt === "Shift Assignment") d.status = d.status || "Active";
       if (dt === "Additional Salary") { const c = rows("Salary Component").find((x) => x.name === d.salary_component); d.type = c ? c.type : d.type; }
       (db[dt] = db[dt] || []).push(d);
@@ -181,7 +183,17 @@
     async submit(dt, name) { return this.update(dt, name, { docstatus: 1 }); },
     async cancel(dt, name) { return this.update(dt, name, { docstatus: 2, ...(dt === "Shift Assignment" ? { status: "Inactive" } : {}) }); },
     async insertSubmit(dt, doc) { return this.insert(dt, { ...doc, docstatus: 1 }); },
-    async call(method, args) { await wait(); if (method === "frappe.client.cancel") return this.cancel(args.doctype, args.name); return null; },
+    async call(method, args) {
+      await wait();
+      if (method === "frappe.client.cancel") return this.cancel(args.doctype, args.name);
+      if (method === "frappe.model.workflow.apply_workflow") {
+        const ref = JSON.parse(args.doc);
+        const d = rows(ref.doctype).find((x) => x.name === ref.name);
+        if (!d || d.workflow_state !== "Pending") throw new ApiError("Not a valid Workflow Action", 417);
+        return this.update(ref.doctype, ref.name, { workflow_state: args.action === "Approve" ? "Approved" : "Rejected" });
+      }
+      return null;
+    },
     async upload(file, { doctype, docname } = {}) {
       load();
       const url = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(file); });

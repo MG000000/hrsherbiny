@@ -40,7 +40,7 @@
     return {
       in: first && first.time, out: last && last.time, late, early, ot,
       missed: (first && !last) || (!first && last) ? 1 : 0,
-      pending: s.some((l) => String(l.device_id || "").startsWith("app-pending")),
+      pending: s.some((l) => l.workflow_state === "Pending" || String(l.device_id || "").startsWith("app-pending")),
     };
   }
 

@@ -9,25 +9,29 @@
   Views.report = async function (view) {
     const now = new Date();
     const st = { ym: `${now.getFullYear()}-${pad(now.getMonth() + 1)}`, emp: "" };
-    const team = Session.isHR ? await Data.team() : [];
     const me = Session.employee;
-    if (!Session.isHR && !me) { view.innerHTML = `${pageHead("تقرير البصمة")}<div class="empty">حسابك مش مربوط بموظف.</div>`; return; }
-    view.innerHTML = `${pageHead("تقرير البصمة", "", Session.isHR ? `<button class="ibtn no-print" id="csv" aria-label="تنزيل Excel">${icon("download")}</button>` : "")}
-      <div class="two no-print" style="margin-bottom:12px"><input class="input" type="month" id="ym" value="${st.ym}">${Session.isHR ? `<select class="input" id="em"><option value="">كل الموظفين</option>${team.map((e) => opt(e.name, e.employee_name)).join("")}</select>` : "<span></span>"}</div>
+    // الأدمن: كل الموظفين. المدير: نفسه وفريقه المباشر. غير كده: نفسه بس
+    let team = await Data.team();
+    if (team.length && me && !team.some((e) => e.name === me.name)) team = [(await Data.employee(me.name).catch(() => null)) || me, ...team];
+    const many = team.length > 0;
+    if (!many && !me) { view.innerHTML = `${pageHead("تقرير البصمة")}<div class="empty">حسابك مش مربوط بموظف.</div>`; return; }
+    view.innerHTML = `${pageHead("تقرير البصمة", "", many ? `<button class="ibtn no-print" id="csv" aria-label="تنزيل Excel">${icon("download")}</button>` : "")}
+      <div class="two no-print" style="margin-bottom:12px"><input class="input" type="month" id="ym" value="${st.ym}">${many ? `<select class="input" id="em"><option value="">${Session.isAdmin ? "كل الموظفين" : "أنا وفريقي"}</option>${team.map((e) => opt(e.name, e.employee_name)).join("")}</select>` : "<span></span>"}</div>
       <div id="out">${loadingHTML}</div>`;
     let results = [], ctx = {};
     const run = async () => {
       const out = view.querySelector("#out"); out.innerHTML = loadingHTML;
       const [y, m] = st.ym.split("-").map(Number);
       const from = `${st.ym}-01`, to = `${st.ym}-${pad(new Date(y, m, 0).getDate())}`;
-      const emps = Session.isHR ? (st.emp ? team.filter((e) => e.name === st.emp) : team) : [(await Data.employee(me.name).catch(() => null)) || me];
-      const ef = Session.isHR ? (st.emp ? [["employee", "=", st.emp]] : []) : [["employee", "=", me.name]];
+      const emps = many ? (st.emp ? team.filter((e) => e.name === st.emp) : team) : [(await Data.employee(me.name).catch(() => null)) || me];
+      const ef = st.emp ? [["employee", "=", st.emp]] : Session.isAdmin ? [] : [["employee", "in", emps.map((e) => e.name)]];
+      const A = many ? Data.api() : API;
       const [types, asg, cks, leaves, ltypes, comps, ots, extras] = await Promise.all([
         Data.shiftTypes(), Data.assignments(from, to),
-        API.list("Employee Checkin", { fields: ["employee", "log_type", "time", "device_id"], filters: [["time", ">=", from + " 00:00:00"], ["time", "<=", to + " 23:59:59"], ...ef], order_by: "time asc" }),
-        API.list("Leave Application", { fields: ["employee", "leave_type", "from_date", "to_date", "status"], filters: [["docstatus", "=", 1], ["status", "=", "Approved"], ["from_date", "<=", to], ["to_date", ">=", from], ...ef] }).catch(() => []),
+        A.list("Employee Checkin", { fields: ["*"], filters: [["time", ">=", from + " 00:00:00"], ["time", "<=", to + " 23:59:59"], ...ef], order_by: "time asc" }),
+        A.list("Leave Application", { fields: ["employee", "leave_type", "from_date", "to_date", "status"], filters: [["docstatus", "=", 1], ["status", "=", "Approved"], ["from_date", "<=", to], ["to_date", ">=", from], ...ef] }).catch(() => []),
         Data.leaveTypes(), Data.components(), Data.overtimeTypes(),
-        API.list("Additional Salary", { fields: ["employee", "salary_component", "amount", "payroll_date", "docstatus", "type"], filters: [["payroll_date", ">=", from], ["payroll_date", "<=", to], ["docstatus", "!=", 2], ...ef] }).catch(() => []),
+        A.list("Additional Salary", { fields: ["employee", "salary_component", "amount", "payroll_date", "docstatus", "type"], filters: [["payroll_date", ">=", from], ["payroll_date", "<=", to], ["docstatus", "!=", 2], ...ef] }).catch(() => []),
       ]);
       const C = CONFIG.COMPONENTS;
       const lwp = new Set(ltypes.filter((t) => Number(t.is_lwp)).map((t) => t.name));
@@ -121,16 +125,17 @@
       <div class="group"><div class="row-item"><span class="avatar">${esc(UI.initials(Session.full_name))}</span><span class="ri-main"><span class="ri-t">${esc(Session.full_name)}</span><span class="ri-s" dir="ltr" style="text-align:end">${esc(Session.user)}</span><span class="ri-s">${esc(roles.join("، ") || "—")}</span></span></div></div>
       <h2 class="sec">الحضور</h2>
       <div class="group">
-        ${Session.isHR || team.length ? row("#/board", "users", "in", "الحضور والانصراف النهارده") : ""}
+        ${team.length ? row("#/board", "users", "in", "الحضور والانصراف النهارده", Session.isAdmin ? "" : "فريقك المباشر") : ""}
         ${row("#/report", "report", "late", "تقرير البصمة")}
         ${Session.employee ? row("#/mine", "cal", "", "طلباتي والإجازات") : ""}
-        ${row("#/rewards", "gift", "in", Session.canReward ? "المكافآت والخصومات" : "مكافآتي وخصوماتي")}
+        ${row("#/rewards", "gift", "in", team.length ? "المكافآت والخصومات" : "مكافآتي وخصوماتي")}
       </div>
       ${Session.isAdmin ? `<h2 class="sec">الإعدادات</h2><div class="group">
         ${row("#/shifts", "clock", "", "الشيفتات", "المواعيد والسماح والأوفر تايم")}
         ${row("#/assign", "swap", "", "تعيين الشيفتات", "مين شغال في أنهي شيفت وأنهي فرع")}
         ${row("#/locations", "building", "", "الفروع", "مكان كل فرع على الخريطة")}
-        ${row("#/employees", "user", "", "الموظفين", "الشيفت الافتراضي والمدير والموافقات")}
+        ${row("#/employees", "user", "", "الموظفين", "الفروع والشيفت والمدير المباشر")}
+        ${row("#/setup", "gear", "brand-ic", "تجهيز ERPNext", "Workflow البصمة وجدول الفروع")}
       </div>` : ""}
       <h2 class="sec">الحساب</h2>
       <div class="group"><button class="row-item" id="out"><span class="ri-ic out">${icon("logout")}</span><span class="ri-main"><span class="ri-t">خروج</span></span></button></div>`;
@@ -257,15 +262,19 @@
     const users = emps.filter((e) => e.user_id);
     view.innerHTML = `${pageHead("الموظفين", `${UI.num(emps.length)} موظف`)}
       <div class="group">${emps.map((e) => `<button class="row-item" data-n="${esc(e.name)}"><span class="avatar">${esc(UI.initials(e.employee_name))}</span><span class="ri-main"><span class="ri-t">${esc(e.employee_name)}</span><span class="ri-s">${esc(e.default_shift || "مالوش شيفت افتراضي")}، ${e.user_id ? "عنده حساب" : "مالوش حساب"}، ${faceOf(e.name).length ? "بصمة الوش متسجلة" : "لسه ما سجّلش بصمة الوش"}</span></span><span class="chev">${icon("chev")}</span></button>`).join("")}</div>`;
-    view.querySelectorAll("[data-n]").forEach((b) => b.onclick = () => {
+    const locs = await Data.locations();
+    view.querySelectorAll("[data-n]").forEach((b) => b.onclick = async () => {
       const e = emps.find((x) => x.name === b.dataset.n);
+      const full = await API.get("Employee", e.name).catch(() => e);
+      const hasTable = Array.isArray(full.custom_branches);
+      const mine = new Set(hasTable ? full.custom_branches.map((r) => r.shift_location) : []);
       const s = UI.sheet({
         title: e.employee_name,
         body: `${!e.user_id ? '<div class="note warn">مالوش حساب على ERPNext (User ID)، فمش هيقدر يدخل يبصم.</div>' : ""}<div class="group" style="margin-bottom:14px"><div class="row-item"><span class="ri-ic" id="fimg">${icon("face")}</span><span class="ri-main"><span class="ri-t">بصمة الوش</span><span class="ri-s">${faceOf(e.name).length ? "متسجلة " + UI.ago(faceOf(e.name)[0].creation) : "هيسجّلها أول مرة يبصم"}</span></span>${faceOf(e.name).length ? '<button class="btn bad sm" id="freset" type="button">مسح</button>' : ""}</div></div>
           <div class="field"><label for="ds">الشيفت الافتراضي</label><select class="input" id="ds"><option value="">—</option>${Object.keys(types).map((n) => opt(n, n, e.default_shift)).join("")}</select><span class="hint">بيتستخدم لو مالوش Shift Assignment.</span></div>
           <div class="field"><label for="rt">المدير المباشر</label><select class="input" id="rt"><option value="">—</option>${emps.filter((x) => x.name !== e.name).map((x) => opt(x.name, x.employee_name, e.reports_to)).join("")}</select></div>
-          <div class="field"><label for="la">بيوافق على الإجازات</label><select class="input" id="la"><option value="">—</option>${users.map((x) => opt(x.user_id, x.employee_name, e.leave_approver)).join("")}</select></div>
-          <div class="field"><label for="sa">بيوافق على تغيير الشيفت</label><select class="input" id="sa"><option value="">—</option>${users.map((x) => opt(x.user_id, x.employee_name, e.shift_request_approver)).join("")}</select></div>
+          <span class="hint" style="display:block;margin:-6px 0 14px">هو اللي هيوافق على بصماته المتأخرة وإجازاته، ولازم يكون معاه دور HR Manager.</span>
+          <div class="field"><label>الفروع اللي يقدر يبصم منها</label>${hasTable ? (locs.length ? `<div class="pick-list" id="br">${locs.map((l) => `<label><input type="checkbox" value="${esc(l.name)}" ${mine.has(l.name) ? "checked" : ""}> ${esc(l.location_name || l.name)}</label>`).join("")}</div><span class="hint">لو مختارتش ولا فرع، هيبصم من أي مكان.</span>` : '<div class="note">مفيش فروع لسه. ضيفها من المزيد ← الفروع.</div>') : '<div class="note warn">جدول الفروع لسه مش متضاف في ملف الموظف. جهزه من المزيد ← تجهيز ERPNext.</div>'}</div>
           <span class="hint">المرتب الأساسي بيتعدّل من Salary Structure Assignment على ERPNext.</span>`,
         footer: `<button class="btn ghost" data-close>إلغاء</button><button class="btn primary" id="sv">حفظ</button>`,
       });
@@ -278,9 +287,216 @@
       s.el.querySelector("#sv").onclick = async (ev) => {
         const btn = ev.currentTarget; btn.disabled = true;
         const v = (id) => s.el.querySelector(id).value || null;
-        try { await API.update("Employee", e.name, { default_shift: v("#ds"), reports_to: v("#rt"), leave_approver: v("#la"), shift_request_approver: v("#sa") }); Data.clear("employees"); toast("اتحفظ", "ok"); s.close(); App.route(); }
+        const mgr = emps.find((x) => x.name === v("#rt"));
+        const patch = { default_shift: v("#ds"), reports_to: v("#rt"), leave_approver: (mgr && mgr.user_id) || null };
+        if (hasTable) patch.custom_branches = [...s.el.querySelectorAll("#br input:checked")].map((i) => ({ shift_location: i.value }));
+        try { await API.update("Employee", e.name, patch); Data.clear("employees"); toast("اتحفظ", "ok"); s.close(); App.route(); }
         catch (x) { toast(x.message, "bad"); btn.disabled = false; }
       };
     });
+  };
+  // ================= تجهيز ERPNext (مدير النظام بس) =================
+  const WF_NAME = "موافقة البصمة";
+  const MGR_COND = 'frappe.session.user == frappe.db.get_value("Employee", frappe.db.get_value("Employee", doc.employee, "reports_to"), "user_id")';
+  const V1 = {
+    doctypes: ["HR Attendance Policy", "HR Leave Reason", "HR Attendance Request", "HR Reward Deduction"],
+    fields: ["Employee-custom_hr_section", "Employee-custom_monthly_salary", "Employee-custom_monthly_grace_minutes", "Employee-custom_no_overtime", "Employee-custom_can_reward", "Employee-custom_hr_col", "Leave Application-custom_reason", "Leave Application-custom_deduct_days"],
+  };
+  const exists = (dt, name) => API.get(dt, name).then(() => true).catch((e) => (e.status === 404 ? false : Promise.reject(e)));
+
+  async function setupWorkflow(log) {
+    for (const [name, style] of [["Pending", "Warning"], ["Approved", "Success"], ["Rejected", "Danger"]]) {
+      if (!(await exists("Workflow State", name))) { await API.insert("Workflow State", { workflow_state_name: name, style }); log(`اتعملت حالة ${name}`); }
+    }
+    for (const name of ["Approve", "Reject", "Review"]) {
+      if (!(await exists("Workflow Action Master", name))) { await API.insert("Workflow Action Master", { workflow_action_name: name }); log(`اتعمل إجراء ${name}`); }
+    }
+    const wf = await API.list("Workflow", { fields: ["name", "is_active"], filters: [["document_type", "=", "Employee Checkin"]] });
+    if (wf.length) { log(`الـ Workflow موجود بالفعل: ${wf[0].name}${Number(wf[0].is_active) ? "" : " (بس مش مفعّل، فعّله من ERPNext)"}`); return; }
+    const t = (state, action, next, role, condition) => ({ state, action, next_state: next, allowed: role, allow_self_approval: 1, ...(condition ? { condition } : {}) });
+    await API.insert("Workflow", {
+      workflow_name: WF_NAME, document_type: "Employee Checkin", is_active: 1, send_email_alert: 0, workflow_state_field: "workflow_state",
+      // أول حالة Approved: البصمة العادية بتتسجل مقبولة على طول
+      states: [
+        { state: "Approved", doc_status: "0", allow_edit: "System Manager" },
+        { state: "Pending", doc_status: "0", allow_edit: "Employee" },
+        { state: "Rejected", doc_status: "0", allow_edit: "System Manager" },
+      ],
+      transitions: [
+        t("Approved", "Review", "Pending", "Employee"),                 // الموظف بيبعت البصمة المتأخرة للموافقة
+        t("Pending", "Approve", "Approved", "HR Manager", MGR_COND),     // المدير المباشر بس
+        t("Pending", "Reject", "Rejected", "HR Manager", MGR_COND),
+        t("Pending", "Approve", "Approved", "System Manager"),           // مدير النظام يقدر يوافق على أي حد
+        t("Pending", "Reject", "Rejected", "System Manager"),
+      ],
+    });
+    Data.clear("wf");
+    log(`اتعمل Workflow "${WF_NAME}" على Employee Checkin`);
+  }
+
+  async function setupBranches(log) {
+    if (!(await exists("DocType", "Employee Branch"))) {
+      await API.insert("DocType", {
+        name: "Employee Branch", module: "Custom", custom: 1, istable: 1, editable_grid: 1,
+        fields: [{ fieldname: "shift_location", label: "الفرع", fieldtype: "Link", options: "Shift Location", reqd: 1, in_list_view: 1 }],
+      });
+      log("اتعمل جدول Employee Branch");
+    } else log("جدول Employee Branch موجود بالفعل");
+    if (!(await exists("Custom Field", "Employee-custom_branches"))) {
+      await API.insert("Custom Field", { dt: "Employee", fieldname: "custom_branches", label: "الفروع", fieldtype: "Table MultiSelect", options: "Employee Branch", insert_after: "default_shift", description: "الفروع اللي الموظف يقدر يبصم منها" });
+      log("اتضافت خانة الفروع في ملف الموظف");
+    } else log("خانة الفروع موجودة بالفعل في ملف الموظف");
+    // نقل الخانتين القديمتين للجدول، وبعدين مسحهم
+    const old = [];
+    for (const f of ["custom_location_1", "custom_location_2"]) if (await exists("Custom Field", `Employee-${f}`)) old.push(f);
+    if (!old.length) return;
+    const emps = await API.list("Employee", { fields: ["name", ...old] });
+    let moved = 0;
+    for (const e of emps) {
+      const vals = old.map((f) => e[f]).filter(Boolean);
+      if (!vals.length) continue;
+      const full = await API.get("Employee", e.name);
+      const cur = (full.custom_branches || []).map((r) => r.shift_location);
+      const merged = [...new Set([...cur, ...vals])];
+      await API.update("Employee", e.name, { custom_branches: merged.map((x) => ({ shift_location: x })) });
+      moved++;
+    }
+    log(`اتنقلت فروع ${UI.num(moved)} موظف للجدول`);
+    for (const f of old) { await API.remove("Custom Field", `Employee-${f}`); log(`اتمسحت الخانة القديمة ${f}`); }
+  }
+
+  async function findV1() {
+    const out = [];
+    for (const d of V1.doctypes) if (await exists("DocType", d).catch(() => false)) out.push(["DocType", d]);
+    for (const f of V1.fields) if (await exists("Custom Field", f).catch(() => false)) out.push(["Custom Field", f]);
+    return out;
+  }
+
+  // ===== باقي خطوات التجهيز =====
+  const COMP_TYPES = () => { const C = CONFIG.COMPONENTS; return [[C.late, "Deduction", "LATE"], [C.missed, "Deduction", "MISS"], [C.overtime, "Earning", "OTM"], [C.reward, "Earning", "RWD"], [C.deduction, "Deduction", "ADMD"]]; };
+  async function setupComponents(log, missedAmount) {
+    for (const [name, type, abbr] of COMP_TYPES()) {
+      if (await exists("Salary Component", name)) {
+        if (name === CONFIG.COMPONENTS.missed && missedAmount > 0) {
+          const c = await API.get("Salary Component", name);
+          if (!Number(c.amount)) { await API.update("Salary Component", name, { amount: missedAmount }); log(`اتحط مبلغ خصم نسيان البصمة ${missedAmount}`); }
+        }
+        continue;
+      }
+      const doc = { salary_component: name, type, depends_on_payment_days: 0, description: "بيتعمل من واجهة الحضور" };
+      if (name === CONFIG.COMPONENTS.missed) doc.amount = missedAmount || 0;
+      let ok = false;
+      for (const ab of [abbr, abbr + "1", abbr + "2", abbr + Math.floor(Math.random() * 900 + 100)]) {
+        try { await API.insert("Salary Component", { ...doc, salary_component_abbr: ab }); ok = true; break; }
+        catch (e) { if (!/abbr|Abbreviation|duplicate|exists/i.test(e.message)) throw e; }
+      }
+      if (ok) log(`اتعمل مكون المرتب "${name}" (${type === "Earning" ? "إضافة" : "خصم"})`);
+    }
+    Data.clear("components");
+  }
+  async function setupHRSettings(log) {
+    const h = await API.get("HR Settings", "HR Settings");
+    if (Number(h.allow_multiple_shift_assignments)) return;
+    await API.update("HR Settings", "HR Settings", { allow_multiple_shift_assignments: 1 });
+    log("اتفعّل Allow Multiple Shift Assignments for Same Date في HR Settings");
+  }
+  async function setupLWP(log) {
+    const t = await API.list("Leave Type", { fields: ["name"], filters: [["is_lwp", "=", 1]], limit: 1 });
+    if (t.length) return;
+    await API.insert("Leave Type", { leave_type_name: "إجازة بدون مرتب", is_lwp: 1, allow_negative: 1, include_holiday: 0 });
+    Data.clear("leaveTypes");
+    log('اتعمل نوع إجازة "إجازة بدون مرتب"');
+  }
+
+  // حالة كل حاجة: [مفتاح، تمام؟، العنوان، الشرح، تتصلح لوحدها؟]
+  async function checks() {
+    const C = CONFIG.COMPONENTS;
+    const [wf, br, comps, hr, lwp, locs, emps, ssa, v1] = await Promise.all([
+      Data.workflowReady(),
+      exists("Custom Field", "Employee-custom_branches").catch(() => false),
+      Promise.all(COMP_TYPES().map(([n]) => exists("Salary Component", n).catch(() => false))),
+      API.get("HR Settings", "HR Settings").then((h) => !!Number(h.allow_multiple_shift_assignments)).catch(() => false),
+      API.list("Leave Type", { fields: ["name"], filters: [["is_lwp", "=", 1]], limit: 1 }).then((r) => r.length > 0).catch(() => false),
+      API.list("Shift Location", { fields: ["name"] }).catch(() => []),
+      API.list("Employee", { fields: ["name", "employee_name", "user_id", "reports_to", "default_shift"], filters: [["status", "=", "Active"]] }).catch(() => []),
+      API.list("Salary Structure Assignment", { fields: ["employee"], filters: [["docstatus", "=", 1]] }).catch(() => []),
+      findV1(),
+    ]);
+    const missedComp = await API.get("Salary Component", C.missed).catch(() => null);
+    const managers = [...new Set(emps.map((e) => e.reports_to).filter(Boolean))].map((n) => emps.find((e) => e.name === n)).filter(Boolean);
+    const mgrUsers = await Promise.all(managers.map((m) => (m.user_id ? API.get("User", m.user_id).then((u) => ({ m, roles: (u.roles || []).map((r) => r.role) })).catch(() => ({ m, roles: [] })) : { m, roles: [] })));
+    const noRole = mgrUsers.filter((x) => !x.roles.includes("HR Manager") && !x.roles.includes("System Manager")).map((x) => x.m.employee_name);
+    const ssaSet = new Set(ssa.map((x) => x.employee));
+    const list = (arr) => arr.slice(0, 6).map(esc).join("، ") + (arr.length > 6 ? ` و${UI.num(arr.length - 6)} كمان` : "");
+    const noUser = emps.filter((e) => !e.user_id).map((e) => e.employee_name);
+    const noSal = emps.filter((e) => !ssaSet.has(e.name)).map((e) => e.employee_name);
+    const noShift = emps.filter((e) => !e.default_shift).map((e) => e.employee_name);
+    const missingComps = COMP_TYPES().filter((_, i) => !comps[i]).map(([n]) => n);
+    return {
+      v1,
+      items: [
+        ["wf", wf, "Workflow البصمة", wf ? "البصمة المتأخرة بتقف عند المدير المباشر." : "هيتعمل Workflow على Employee Checkin.", true],
+        ["br", br, "جدول الفروع في ملف الموظف", br ? "تقدر تحدد أكتر من فرع لكل موظف." : "هيتعمل، والفروع القديمة هتتنقل ليه.", true],
+        ["comp", !missingComps.length && !!(missedComp && Number(missedComp.amount)), "مكونات المرتب", missingComps.length ? `هيتعمل: ${list(missingComps)}` : !(missedComp && Number(missedComp.amount)) ? "مبلغ خصم نسيان البصمة لسه صفر." : "موجودين.", true],
+        ["hr", hr, "HR Settings", hr ? "Allow Multiple Shift Assignments متفعّل." : "هيتفعّل Allow Multiple Shift Assignments عشان البصمة في شيفت تاني.", true],
+        ["lwp", lwp, "إجازة بدون مرتب", lwp ? "فيه نوع إجازة بيتخصم من المرتب." : 'هيتعمل نوع "إجازة بدون مرتب".', true],
+        ["loc", locs.length > 0, "الفروع", locs.length ? `${UI.num(locs.length)} فرع.` : "مفيش فروع. ضيفها من المزيد ← الفروع وانت واقف في كل فرع.", false],
+        ["usr", !noUser.length, "حسابات الموظفين", noUser.length ? `مالهمش User ID ومش هيقدروا يدخلوا: ${list(noUser)}` : "كل الموظفين ليهم حسابات.", false],
+        ["mgr", !noRole.length, "المديرين المباشرين", noRole.length ? `محتاجين دور HR Manager عشان يوافقوا على فريقهم: ${list(noRole)}` : managers.length ? "كلهم معاهم HR Manager." : "مفيش حد متحدد له مدير مباشر (Reports To).", false],
+        ["sft", !noShift.length, "الشيفت الافتراضي", noShift.length ? `مالهمش شيفت افتراضي: ${list(noShift)}` : "كل الموظفين ليهم شيفت.", false],
+        ["sal", !noSal.length, "المرتب الأساسي", noSal.length ? `مالهمش Salary Structure Assignment، فالخصومات هتطلع صفر: ${list(noSal)}` : "كل الموظفين ليهم مرتب.", false],
+      ],
+    };
+  }
+
+  Views.setup = async function (view) {
+    if (!Session.isAdmin) return deny(view, "تجهيز ERPNext");
+    if (API.isDemo()) { view.innerHTML = `${pageHead("تجهيز ERPNext")}<div class="note">انت في الوضع التجريبي، والبيانات التجريبية متجهزة بالفعل. اقفل الوضع التجريبي من شاشة الدخول عشان تجهّز ERPNext الحقيقي.</div><button class="btn ghost block" id="rs">${icon("trash")} رجّع البيانات التجريبية من الأول</button>`; view.querySelector("#rs").onclick = async () => { if (await UI.confirmBox("إعادة البيانات", "كل التعديلات التجريبية هتتمسح.", "إعادة", "bad")) { MockAPI.reset(); Data.clear(); toast("رجعت", "ok"); } }; return; }
+    Data.clear("wf");
+    const { items, v1 } = await checks();
+    const auto = items.filter((x) => x[4]), manual = items.filter((x) => !x[4]);
+    const todo = auto.filter((x) => !x[1]).length;
+    const row = ([, ok, t, d]) => `<div class="row-item"><span class="ri-ic ${ok ? "in" : "late"}">${icon(ok ? "check" : "alert")}</span><span class="ri-main"><span class="ri-t">${t}</span><span class="ri-s">${d}</span></span></div>`;
+    view.innerHTML = `${pageHead("تجهيز ERPNext", todo ? `فاضل ${UI.num(todo)} حاجة تتعمل` : "السيستم متجهز")}
+      <div class="form" style="margin-bottom:12px">
+        <div class="field"><label for="ma">مبلغ خصم نسيان البصمة (كل مرة)</label><input class="input" id="ma" type="number" min="0" value="50" inputmode="decimal"></div>
+        <button class="btn primary block lg" id="all">${icon("check")} ${todo ? "جهّز كل حاجة" : "اتأكد تاني"}</button>
+        <p class="hint" style="margin:8px 0 0">بيعمل الحاجات الناقصة بس، وتقدر تدوسه أكتر من مرة من غير مشاكل.</p>
+      </div>
+      <div class="log" id="log" hidden></div>
+      <h2 class="sec">بيتعمل لوحده</h2>
+      <div class="group">${auto.map(row).join("")}</div>
+      <h2 class="sec">محتاج تعمله بنفسك على ERPNext</h2>
+      <div class="group">${manual.map(row).join("")}</div>
+      ${v1.length ? `<h2 class="sec">حاجات من النسخة الأولى</h2><div class="group"><div class="req"><div class="row-item"><span class="ri-ic late">${icon("trash")}</span><span class="ri-main"><span class="ri-t">مش مستخدمة دلوقتي</span><span class="ri-s">${v1.map((x) => esc(x[1])).join("، ")}</span></span></div><div class="item-actions"><button class="btn bad sm" id="v1">مسحهم نهائي</button></div></div></div>` : ""}`;
+    const logEl = view.querySelector("#log");
+    const log = (m, bad) => { logEl.hidden = false; const d = document.createElement("div"); d.textContent = m; if (bad) d.style.color = "var(--out)"; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; };
+    view.querySelector("#all").onclick = async (e) => {
+      const b = e.currentTarget; b.disabled = true; b.innerHTML = '<span class="spin"></span> بيجهّز...';
+      logEl.innerHTML = "";
+      const amount = Number(view.querySelector("#ma").value) || 0;
+      const steps = [
+        ["Workflow البصمة", () => setupWorkflow(log)],
+        ["جدول الفروع", () => setupBranches(log)],
+        ["مكونات المرتب", () => setupComponents(log, amount)],
+        ["HR Settings", () => setupHRSettings(log)],
+        ["إجازة بدون مرتب", () => setupLWP(log)],
+      ];
+      let failed = 0;
+      for (const [name, fn] of steps) {
+        try { await fn(); } catch (x) { failed++; log(`${name}: ${x.message}`, true); }
+      }
+      log(failed ? `خلص، بس ${UI.num(failed)} خطوة ما نفعتش (مكتوبة بالأحمر فوق).` : "خلص ✓ كل حاجة متجهزة.", !!failed);
+      toast(failed ? "فيه خطوات ما نفعتش" : "اتجهز", failed ? "bad" : "ok");
+      Data.clear();
+      b.disabled = false; b.textContent = "اعرض الحالة الجديدة"; b.onclick = () => App.route();
+    };
+    const v = view.querySelector("#v1");
+    if (v) v.onclick = async () => {
+      if (!(await UI.confirmBox("مسح حاجات النسخة الأولى", "المستندات دي والبيانات اللي فيها هتتمسح نهائي من ERPNext. لو فيه بيانات محتاجها، انقلها الأول.", "مسح نهائي", "bad"))) return;
+      v.disabled = true;
+      for (const [dt, n] of v1) { try { await API.remove(dt, n); log(`اتمسح ${n}`); } catch (e) { log(`${n}: ${e.message}`, true); } }
+      setTimeout(() => App.route(), 1500);
+    };
   };
 })();
