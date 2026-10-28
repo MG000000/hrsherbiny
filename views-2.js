@@ -4,13 +4,46 @@
   const opt = (v, t, sel) => `<option value="${esc(v)}" ${v === sel ? "selected" : ""}>${esc(t ?? v)}</option>`;
   const dshort = (d) => UI.dateAr(d, { day: "numeric", month: "short" });
   const range = (a, b) => (a === b ? dshort(a) : `${dshort(a)} ← ${dshort(b)}`);
-  const comment = (dt, name, content) => API.insert("Comment", { comment_type: "Comment", reference_doctype: dt, reference_name: name, content }).catch(() => {});
+  const comment = (dt, name, content) => asUserOrAdmin((A) => A.insert("Comment", { comment_type: "Comment", reference_doctype: dt, reference_name: name, content }));
   const userOf = async (emp) => { const e = await Data.employee(emp).catch(() => null); return e && e.user_id; };
   // بنجرّب بصلاحيات اليوزر الأول، ولو ERPNext رفض (المدير مالوش صلاحية كتابة) بنكمّل بمفتاح الأدمن
   // (الواجهة متأكدة قبلها إن الموظف ده في فريقه المباشر)
   const asUserOrAdmin = (fn) => fn(API).catch((e) => ([401, 403, 417].includes(e.status) ? fn(API.admin) : Promise.reject(e)));
   const applyWorkflow = (name, action) => asUserOrAdmin((A) => A.call("frappe.model.workflow.apply_workflow", { doc: JSON.stringify({ doctype: "Employee Checkin", name }), action }));
   const tagCheckin = (name, device_id) => asUserOrAdmin((A) => A.update("Employee Checkin", name, { device_id }));
+  async function sendDecisionReply(doctype, doc, note, subject) {
+    const issues = [];
+    if (note) {
+      try { await comment(doctype, doc.name, note); }
+      catch (e) { issues.push(`تعذّر حفظ الرد: ${e.message}`); }
+    }
+    const recipient = await userOf(doc.employee).catch((e) => {
+      issues.push(`تعذّر تحديد حساب الموظف: ${e.message}`);
+      return null;
+    });
+    if (!recipient) issues.push("الموظف ليس له حساب مستخدم مربوط لإرسال الإشعار.");
+    else {
+      const failures = await Notify.send(recipient, subject, doctype, doc.name);
+      issues.push(...failures);
+    }
+    return issues;
+  }
+  async function repliesFor(doctype, docs) {
+    const names = docs.map((doc) => doc.name);
+    if (!names.length) return new Map();
+    const rows = await API.admin.list("Comment", {
+      fields: ["reference_name", "content", "owner", "creation"],
+      filters: [["reference_doctype", "=", doctype], ["reference_name", "in", names], ["comment_type", "=", "Comment"]],
+      order_by: "creation asc",
+    });
+    const replies = new Map();
+    rows.filter((row) => row.owner !== Session.user).forEach((row) => {
+      const list = replies.get(row.reference_name) || [];
+      list.push(row.content);
+      replies.set(row.reference_name, list);
+    });
+    return replies;
+  }
   async function filesOf(dt, name) {
     const f = await API.attachments(dt, name);
     const urls = await Promise.all(f.map((x) => API.fileBlobUrl(x.file_url).catch(() => null)));
@@ -85,16 +118,18 @@
         if (ok) await asUserOrAdmin((A) => A.update("Employee Checkin", c.name, { skip_auto_attendance: 0 }));
         // بصمة في شيفت تاني: بنعيّنه على الشيفت ده اليوم ده بس عشان الحضور يتحسب صح
         const [, kind] = String(c.device_id).split(":");
-        if (ok && kind === "shift") {
-          const shift = String(c.device_id).split(":").slice(2).join(":"), day = String(c.time).slice(0, 10);
+        const shift = String(c.device_id).split(":").slice(2).join(":");
+        if (ok && kind === "shift" && shift) {
+          const day = String(c.time).slice(0, 10);
           const emp = await Data.employee(c.employee);
           await API.admin.insertSubmit("Shift Assignment", { employee: c.employee, company: emp && emp.company, shift_type: shift, start_date: day, end_date: day, status: "Active" })
             .catch((e) => toast(`البصمة اتقبلت، بس تعيين الشيفت ليوم ${day} ما اتعملش: ${e.message}`, "bad"));
         }
       }
-      if (v.note) await comment("Employee Checkin", c.name, v.note);
-      await Notify.send(await userOf(c.employee), `بصمة ${c.log_type === "IN" ? "الحضور" : "الانصراف"} الساعة ${UI.hm(c.time)} ${ok ? "اتقبلت ✓" : "اترفضت ✗"}${v.note ? " — " + v.note : ""}`, "Employee Checkin", c.name);
-      toast(ok ? "اتوافق عليها" : "اترفضت", "ok"); done();
+      const issues = await sendDecisionReply("Employee Checkin", c, v.note, `بصمة ${c.log_type === "IN" ? "الحضور" : "الانصراف"} الساعة ${UI.hm(c.time)} ${ok ? "اتقبلت ✓" : "اترفضت ✗"}${v.note ? " — " + v.note : ""}`);
+      const message = ok ? "اتوافق عليها" : "اترفضت";
+      toast(issues.length ? `${message}، لكن ${issues.join("، ")}` : message, issues.length ? "bad" : "ok");
+      done();
     } catch (e) { toast(e.message, "bad"); }
   }
 
@@ -114,9 +149,10 @@
       try {
         await asUserOrAdmin((A) => A.update("Leave Application", r.name, { status: ok ? "Approved" : "Rejected", leave_type: lt }));
         await asUserOrAdmin((A) => A.submit("Leave Application", r.name));
-        if (note) await comment("Leave Application", r.name, note);
-        await Notify.send(await userOf(r.employee), `طلب ${lt} من ${r.from_date} ${ok ? "اتقبل ✓" : "اترفض ✗"}${note ? " — " + note : ""}`, "Leave Application", r.name);
-        toast(ok ? "الإجازة اتقبلت" : "الإجازة اترفضت", "ok"); s.close(); done();
+        const issues = await sendDecisionReply("Leave Application", r, note, `طلب ${lt} من ${r.from_date} ${ok ? "اتقبل ✓" : "اترفض ✗"}${note ? " — " + note : ""}`);
+        const message = ok ? "الإجازة اتقبلت" : "الإجازة اترفضت";
+        toast(issues.length ? `${message}، لكن ${issues.join("، ")}` : message, issues.length ? "bad" : "ok");
+        s.close(); done();
       } catch (x) { toast(x.message, "bad"); b.disabled = false; }
     };
   }
@@ -130,10 +166,15 @@
       API.list("Leave Application", { fields: ["name", "leave_type", "from_date", "to_date", "total_leave_days", "status", "description"], filters: [["employee", "=", me.name]], order_by: "creation desc", limit: 20 }).catch(() => []),
       API.list("Employee Checkin", { fields: ["*"], filters: [["employee", "=", me.name], ["device_id", "like", "app:%"]], order_by: "time desc", limit: 15 }).catch(() => []),
     ]);
+    const [leaveReplies, checkinReplies] = await Promise.all([
+      repliesFor("Leave Application", lv),
+      repliesFor("Employee Checkin", cks),
+    ]);
+    const replyMarkup = (replies, name) => (replies.get(name) || []).map((reply) => `<span class="ri-s" style="white-space:pre-wrap;color:var(--in)">رد المدير: ${esc(reply)}</span>`).join("");
     const t = UI.today();
     const items = [
-      ...lv.map((r) => ({ ic: "cal", t: r.leave_type, s: `${range(r.from_date, r.to_date)}، ${UI.num(r.total_leave_days || 1)} يوم`, st: r.status })),
-      ...cks.filter((c) => c.workflow_state).map((c) => ({ ic: "finger", t: reasonOf(c), s: `${c.log_type === "IN" ? "حضور" : "انصراف"} ${UI.hm(c.time)}، ${dshort(String(c.time).slice(0, 10))}`, st: c.workflow_state })),
+      ...lv.map((r) => ({ ic: "cal", t: r.leave_type, s: `${range(r.from_date, r.to_date)}، ${UI.num(r.total_leave_days || 1)} يوم`, st: r.status, reply: replyMarkup(leaveReplies, r.name) })),
+      ...cks.filter((c) => c.workflow_state).map((c) => ({ ic: "finger", t: reasonOf(c), s: `${c.log_type === "IN" ? "حضور" : "انصراف"} ${UI.hm(c.time)}، ${dshort(String(c.time).slice(0, 10))}`, st: c.workflow_state, reply: replyMarkup(checkinReplies, c.name) })),
     ];
     view.innerHTML = `${pageHead("طلباتي")}
       <form class="form" id="lf">
@@ -143,7 +184,7 @@
         <button class="btn primary block" type="submit">ابعت طلب الإجازة</button>
       </form>
       <h2 class="sec">حالة طلباتك</h2>
-      ${items.length ? `<div class="group">${items.map((x) => `<div class="row-item"><span class="ri-ic">${icon(x.ic)}</span><span class="ri-main"><span class="ri-t">${esc(x.t)}</span><span class="ri-s">${x.s}</span></span><span class="ri-end">${UI.statusTag(x.st)}</span></div>`).join("")}</div>` : '<div class="empty">مفيش طلبات</div>'}`;
+      ${items.length ? `<div class="group">${items.map((x) => `<div class="row-item"><span class="ri-ic">${icon(x.ic)}</span><span class="ri-main"><span class="ri-t">${esc(x.t)}</span><span class="ri-s">${x.s}</span>${x.reply}</span><span class="ri-end">${UI.statusTag(x.st)}</span></div>`).join("")}</div>` : '<div class="empty">مفيش طلبات</div>'}`;
     view.querySelector("#lf").onsubmit = async (e) => {
       e.preventDefault();
       const f = Object.fromEntries(new FormData(e.target));

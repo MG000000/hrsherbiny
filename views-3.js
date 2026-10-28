@@ -202,8 +202,9 @@ window.Views = window.Views || {};
     const [locs, enrollment, myBranches] = await Promise.all([Data.locations(), CONFIG.REQUIRE_FACE ? Face.loadEnrollment(emp.name) : null, Data.branches(emp.name)]);
     let enrolled = enrollment;
     const last = logs[logs.length - 1];
-    const assigned = shifts.map((s) => s.shift.name);
-    const st = { log: last && last.log_type === "IN" ? "OUT" : "IN", shift: assigned[0] || Object.keys(types)[0] || "", pos: null };
+    const assigned = [...new Set(shifts.map((s) => s.shift.name))];
+    const assignedShifts = [...new Map(shifts.map((s) => [s.shift.name, s.shift])).values()];
+    const st = { log: last && last.log_type === "IN" ? "OUT" : "IN", shift: assigned[0] || "", pos: null };
 
     // الفروع المسموحة: جدول الفروع في ملف الموظف، + فرع تعيين الشيفت لو محدد
     const allowedLocs = () => {
@@ -215,7 +216,7 @@ window.Views = window.Views || {};
     view.innerHTML = `${pageHead("البصمة", UI.dateAr(new Date()))}
       <div class="choice"><button data-t="IN">${icon("login")} حضور</button><button data-t="OUT">${icon("logout")} انصراف</button></div>
       <div class="form" style="margin-bottom:12px"><div class="field"><label for="sh">الشيفت</label>
-        <select class="input" id="sh">${Object.values(types).map((s) => `<option value="${esc(s.name)}" ${s.name === st.shift ? "selected" : ""}>${esc(s.name)} (${s.start_time.slice(0, 5)} - ${s.end_time.slice(0, 5)})${assigned.includes(s.name) ? "، شيفتك" : ""}</option>`).join("")}</select>
+        <select class="input" id="sh" ${assignedShifts.length ? "" : "disabled"}>${assignedShifts.length ? assignedShifts.map((s) => `<option value="${esc(s.name)}" ${s.name === st.shift ? "selected" : ""}>${esc(s.name)} (${s.start_time.slice(0, 5)} - ${s.end_time.slice(0, 5)})</option>`).join("") : '<option value="">مفيش شيفت متعيّن النهارده</option>'}</select>
         <span class="hint" id="shh"></span></div></div>
       <div class="group" id="steps">
         <div class="row-item check-step" id="s-loc"><span class="ri-ic">${icon("pin")}</span><span class="ri-main"><span class="ri-t">الموقع</span><span class="ri-s"></span></span></div>
@@ -231,7 +232,7 @@ window.Views = window.Views || {};
     setChoice();
     const sh = view.querySelector("#sh"), shh = view.querySelector("#shh");
     const locText = () => { const l = allowedLocs(); view.querySelector("#s-loc .ri-s").textContent = l.length ? "لازم تكون في " + l.map((x) => x.location_name || x.name).join(" أو ") : "هيتسجل موقعك"; };
-    const shiftHint = () => { shh.textContent = assigned.length && !assigned.includes(st.shift) ? "ده مش شيفتك، البصمة هتروح طلب تغيير شيفت للمدير." : !assigned.length ? "مفيش شيفت متعيّن لك، البصمة هتروح طلب للمدير." : ""; shh.style.color = "var(--late)"; };
+    const shiftHint = () => { shh.textContent = assigned.length ? "" : "مفيش شيفت متعيّن لك النهارده، البصمة هتحتاج موافقة المدير."; shh.style.color = "var(--late)"; };
     sh.onchange = () => { st.shift = sh.value; shiftHint(); locText(); };
     shiftHint(); locText();
 

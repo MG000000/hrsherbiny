@@ -85,7 +85,16 @@
   const Notify = {
     async send(users, subject, doctype, docname) {
       const list = [...new Set([].concat(users || []).filter((u) => u && u !== Session.user))];
-      await Promise.all(list.map((u) => API.admin.insert("Notification Log", { for_user: u, from_user: Session.user, subject, type: "Alert", document_type: doctype || null, document_name: docname || null }).catch((e) => console.warn(e))));
+      const failures = await Promise.all(list.map(async (u) => {
+        try {
+          await API.admin.insert("Notification Log", { for_user: u, from_user: Session.user, subject, type: "Alert", document_type: doctype || null, document_name: docname || null });
+          return null;
+        } catch (e) {
+          console.warn(e);
+          return `تعذّر إرسال الإشعار إلى ${u}: ${e.message}`;
+        }
+      }));
+      return failures.filter(Boolean);
     },
     async unread() {
       try { return (await API.list("Notification Log", { fields: ["name"], filters: [["for_user", "=", Session.user], ["read", "=", 0]], limit: 99 })).length; } catch (e) { return 0; }
